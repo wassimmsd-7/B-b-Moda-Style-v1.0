@@ -594,9 +594,11 @@ function ProductForm({ product, categories, suppliers, onClose, onSaved }: {
     };
 
     if (product) {
-      await supabase.from('products').update(data).eq('id', product.id);
+      const { error } = await supabase.from('products').update(data).eq('id', product.id);
+      if (error) { alert('Erreur lors de la sauvegarde du produit: ' + error.message); setSaving(false); return; }
     } else {
-      await supabase.from('products').insert(data);
+      const { error } = await supabase.from('products').insert(data);
+      if (error) { alert('Erreur lors de la création du produit: ' + error.message); setSaving(false); return; }
     }
     setSaving(false);
     onSaved();
@@ -1129,10 +1131,13 @@ function SupplierForm({ supplier, onClose, onSaved }: { supplier: Supplier | nul
   });
 
   const handleSave = async () => {
+    if (!form.name.trim()) { alert('Le nom du fournisseur est requis.'); return; }
     if (supplier) {
-      await supabase.from('suppliers').update(form).eq('id', supplier.id);
+      const { error } = await supabase.from('suppliers').update(form).eq('id', supplier.id);
+      if (error) { alert('Erreur: ' + error.message); return; }
     } else {
-      await supabase.from('suppliers').insert(form);
+      const { error } = await supabase.from('suppliers').insert(form);
+      if (error) { alert('Erreur: ' + error.message); return; }
     }
     onSaved();
   };
@@ -1245,9 +1250,11 @@ function PromoForm({ promo, onClose, onSaved }: { promo: Promotion | null; onClo
       end_date: form.end_date || null,
     };
     if (promo) {
-      await supabase.from('promotions').update(data).eq('id', promo.id);
+      const { error } = await supabase.from('promotions').update(data).eq('id', promo.id);
+      if (error) { alert('Erreur: ' + error.message); return; }
     } else {
-      await supabase.from('promotions').insert(data);
+      const { error } = await supabase.from('promotions').insert(data);
+      if (error) { alert('Erreur: ' + error.message); return; }
     }
     onSaved();
   };
@@ -1468,8 +1475,9 @@ function PurchaseOrderForm({ suppliers, products, initialSupplierId, initialItem
   const total = items.reduce((s, i) => s + i.qty * i.price, 0);
 
   const handleSave = async () => {
+    if (items.filter((i) => i.productId).length === 0) { alert('Ajoutez au moins un article.'); return; }
     const supplier = suppliers.find((s) => s.id === supplierId);
-    const { data: po } = await supabase.from('purchase_orders').insert({
+    const { data: po, error: poError } = await supabase.from('purchase_orders').insert({
       supplier_id: supplierId || null,
       supplier_name: supplier?.name || null,
       total_amount: total,
@@ -1477,21 +1485,25 @@ function PurchaseOrderForm({ suppliers, products, initialSupplierId, initialItem
       status: 'draft',
     }).select('id').single();
 
-    if (po) {
-      await supabase.from('purchase_order_items').insert(
-        items.filter((i) => i.productId).map((i) => {
-          const p = products.find((p) => p.id === i.productId);
-          return {
-            po_id: po.id,
-            product_id: i.productId,
-            product_name: p?.name_fr || '',
-            quantity_ordered: i.qty,
-            unit_price: i.price,
-            total_price: i.qty * i.price,
-          };
-        }),
-      );
+    if (poError || !po) {
+      alert('Erreur lors de la création du bon de commande: ' + (poError?.message || 'inconnue'));
+      return;
     }
+
+    const { error: itemsError } = await supabase.from('purchase_order_items').insert(
+      items.filter((i) => i.productId).map((i) => {
+        const p = products.find((p) => p.id === i.productId);
+        return {
+          po_id: po.id,
+          product_id: i.productId,
+          product_name: p?.name_fr || '',
+          quantity_ordered: i.qty,
+          unit_price: i.price,
+          total_price: i.qty * i.price,
+        };
+      }),
+    );
+    if (itemsError) { alert('Erreur lors de l\'ajout des articles: ' + itemsError.message); return; }
     onSaved();
   };
 
