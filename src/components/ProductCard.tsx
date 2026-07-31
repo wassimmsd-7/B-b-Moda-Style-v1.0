@@ -2,8 +2,6 @@ import { ShoppingCart, Eye, Star, Zap } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
 import { tr } from '@/lib/i18n';
 import { formatPrice, getProductName, getStockStatus } from '@/lib/utils';
-import { supabase } from '@/lib/supabase';
-import { createNotification } from '@/lib/notifications';
 import type { Product } from '@/lib/types';
 
 interface ProductCardProps {

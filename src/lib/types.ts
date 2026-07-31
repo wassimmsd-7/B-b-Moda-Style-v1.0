@@ -236,6 +236,16 @@ export interface ExpertTip {
   active: boolean;
 }
 
+export interface Expense {
+  id: string;
+  type: 'personnel' | 'salary' | 'rent' | 'utility' | 'supplies' | 'marketing' | 'transport' | 'tax' | 'other';
+  category: string | null;
+  description: string | null;
+  amount: number;
+  payment_date: string | null;
+  created_at: string;
+}
+
 export interface CartItem {
   product_id: string;
   name: string;

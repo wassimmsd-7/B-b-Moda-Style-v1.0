@@ -5,10 +5,10 @@ import { supabase } from '@/lib/supabase';
 import { createNotification } from '@/lib/notifications';
 import {
   Search, Plus, Minus, Trash2, ShoppingCart, Printer, X,
-  CreditCard, Banknote, Clock, Check, Baby, ArrowLeft, Receipt,
+  CreditCard, Banknote, Clock, Check, ArrowLeft, Receipt,
   History, RotateCcw, AlertCircle,
 } from 'lucide-react';
-import type { Product, CashSale, Category } from '@/lib/types';
+import type { Product, CashSale, CashSaleItem, Category } from '@/lib/types';
 
 interface PosPageProps {
   navigate: (path: string) => void;
@@ -45,7 +45,7 @@ export function PosPage({ navigate }: PosPageProps) {
   const [loading, setLoading] = useState(true);
   const [showHistory, setShowHistory] = useState(false);
   const [selectedSale, setSelectedSale] = useState<CashSale | null>(null);
-  const [saleItems, setSaleItems] = useState<any[]>([]);
+  const [saleItems, setSaleItems] = useState<CashSaleItem[]>([]);
 
   const loadProducts = useCallback(async () => {
     const [{ data: prods }, { data: cats }] = await Promise.all([

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useApp } from '@/context/AppContext';
 import { tr } from '@/lib/utils';
-import { Phone, Mail, MapPin, Clock, Send } from 'lucide-react';
+import { Phone, MapPin, Send } from 'lucide-react';
 
 const WHATSAPP_NUMBER = '213542886457';
 const FACEBOOK_URL = 'https://www.facebook.com/profile.php?id=100067347612207';
@@ -11,7 +11,7 @@ interface ContactPageProps {
   navigate: (path: string) => void;
 }
 
-export function ContactPage({ navigate }: ContactPageProps) {
+export function ContactPage(_props: ContactPageProps) {
   const { lang } = useApp();
   const [sent, setSent] = useState(false);
   const [form, setForm] = useState({ name: '', phone: '', message: '' });

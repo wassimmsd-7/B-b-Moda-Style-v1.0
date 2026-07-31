@@ -5,11 +5,10 @@ import { supabase } from '@/lib/supabase';
 import {
   LayoutDashboard, Package, ShoppingCart, Users, Truck, Tag, BarChart3,
   Settings, Menu, X, Plus, Edit2, Trash2, Search, AlertTriangle,
-  TrendingUp, DollarSign, ShoppingBag, ArrowUpRight, ArrowDownRight,
-  ClipboardList, Baby, ChevronRight, Filter, Wallet, Upload, Download,
-  Calendar, CreditCard, Banknote, Receipt, Bell,
+  TrendingUp, DollarSign, ShoppingBag, ArrowDownRight,
+  ClipboardList, Wallet, Receipt,
 } from 'lucide-react';
-import type { Product, Category, Order, Client, Supplier, CashSale, Promotion, PurchaseOrder } from '@/lib/types';
+import type { Product, Category, Order, OrderItem, Client, Supplier, Promotion, PurchaseOrder, Expense } from '@/lib/types';
 
 interface AdminPageProps {
   navigate: (path: string) => void;
@@ -22,6 +21,37 @@ export function AdminPage({ navigate }: AdminPageProps) {
   const [tab, setTab] = useState<AdminTab>('dashboard');
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [showLogin, setShowLogin] = useState(!staffRole);
+  const [checkingSession, setCheckingSession] = useState(true);
+
+  useEffect(() => {
+    // Restore an existing Supabase session on page reload instead of
+    // forcing staff to log in again every time.
+    (async () => {
+      const { data } = await supabase.auth.getSession();
+      const email = data.session?.user.email;
+      if (email) {
+        const { data: staff } = await supabase
+          .from('app_users')
+          .select('role, active')
+          .eq('email', email)
+          .maybeSingle();
+        if (staff?.active) {
+          setStaffRole(staff.role as 'superadmin' | 'owner' | 'cashier');
+          setShowLogin(false);
+        }
+      }
+      setCheckingSession(false);
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  if (checkingSession) {
+    return (
+      <div className="min-h-screen bg-gray-50 dark:bg-gray-950 flex items-center justify-center">
+        <div className="text-sm text-gray-400">Chargement…</div>
+      </div>
+    );
+  }
 
   const tabs: { key: AdminTab; label: string; icon: typeof LayoutDashboard }[] = [
     { key: 'dashboard', label: tr('dashboard', lang), icon: LayoutDashboard },
@@ -83,7 +113,7 @@ export function AdminPage({ navigate }: AdminPageProps) {
             {tr('pos', lang)}
           </button>
           <button
-            onClick={() => { setStaffRole(null); navigate('/'); }}
+            onClick={async () => { await supabase.auth.signOut(); setStaffRole(null); navigate('/'); }}
             className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-red-500 hover:bg-red-50 dark:hover:bg-red-900/30 mt-4"
           >
             <X className="w-4 h-4" />
@@ -136,12 +166,40 @@ function StaffLogin({ onLogin, navigate }: { onLogin: (role: 'superadmin' | 'own
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
 
-  const handleLogin = (e: React.FormEvent) => {
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    // Simple role-based login (in production, use Supabase Auth)
-    const role = email.includes('admin') ? 'superadmin' : email.includes('owner') ? 'owner' : 'cashier';
-    onLogin(role as 'superadmin' | 'owner' | 'cashier');
+    setError(null);
+    setLoading(true);
+
+    const { error: authError } = await supabase.auth.signInWithPassword({ email, password });
+    if (authError) {
+      setLoading(false);
+      setError('Email ou mot de passe incorrect.');
+      return;
+    }
+
+    const { data: staff, error: staffError } = await supabase
+      .from('app_users')
+      .select('role, active')
+      .eq('email', email)
+      .maybeSingle();
+
+    setLoading(false);
+
+    if (staffError || !staff) {
+      setError("Ce compte n'a pas accès à l'espace staff (introuvable dans app_users).");
+      await supabase.auth.signOut();
+      return;
+    }
+    if (!staff.active) {
+      setError('Ce compte a été désactivé.');
+      await supabase.auth.signOut();
+      return;
+    }
+
+    onLogin(staff.role as 'superadmin' | 'owner' | 'cashier');
   };
 
   return (
@@ -174,12 +232,9 @@ function StaffLogin({ onLogin, navigate }: { onLogin: (role: 'superadmin' | 'own
             />
           </div>
           {error && <div className="text-sm text-red-500">{error}</div>}
-          <button type="submit" className="w-full py-3 rounded-xl bg-pink-500 hover:bg-pink-600 text-white font-semibold transition-colors">
-            Se connecter
+          <button type="submit" disabled={loading} className="w-full py-3 rounded-xl bg-pink-500 hover:bg-pink-600 disabled:opacity-60 text-white font-semibold transition-colors">
+            {loading ? 'Connexion…' : 'Se connecter'}
           </button>
-          <div className="text-xs text-center text-gray-400">
-            Comptes démo: admin@ / owner@ / caisse@
-          </div>
           <button onClick={() => navigate('/')} className="w-full text-sm text-gray-500 hover:text-pink-500">
             ← {tr('home', lang)}
           </button>
@@ -633,7 +688,7 @@ function OrdersTab() {
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<Order | null>(null);
-  const [items, setItems] = useState<any[]>([]);
+  const [items, setItems] = useState<OrderItem[]>([]);
 
   const load = useCallback(async () => {
     const { data } = await supabase.from('orders').select('*').order('created_at', { ascending: false });
@@ -650,7 +705,7 @@ function OrdersTab() {
   });
 
   const updateStatus = async (order: Order, status: Order['status']) => {
-    const updates: any = { status, updated_at: new Date().toISOString() };
+    const updates: Partial<Order> = { status, updated_at: new Date().toISOString() };
     if (status === 'confirmed') updates.confirmed_at = new Date().toISOString();
     if (status === 'shipped') updates.shipped_at = new Date().toISOString();
     if (status === 'delivered') updates.delivered_at = new Date().toISOString();
@@ -836,7 +891,8 @@ function InventoryTab() {
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {filtered.map((p) => {
+        {loading && <div className="col-span-full text-center text-gray-400 py-12">{tr('loading', lang)}</div>}
+        {!loading && filtered.map((p) => {
           const status = getStockStatus(p.stock, p.stock_min);
           return (
             <div key={p.id} className="bg-white dark:bg-gray-800 rounded-2xl p-4 border border-gray-100 dark:border-gray-700">
@@ -1361,7 +1417,7 @@ function AnalyticsTab() {
     (async () => {
       setLoading(true);
       const now = new Date();
-      let start = new Date();
+      const start = new Date();
       if (period === 'today') start.setHours(0, 0, 0, 0);
       else if (period === 'week') start.setDate(now.getDate() - 7);
       else if (period === 'month') start.setMonth(now.getMonth() - 1);
@@ -1449,7 +1505,7 @@ function SettingsTab() {
   useEffect(() => {
     supabase.from('settings').select('*').then(({ data }) => {
       const map: Record<string, string> = {};
-      (data || []).forEach((s: any) => map[s.key] = s.value);
+      (data || []).forEach((s: { key: string; value: string }) => map[s.key] = s.value);
       setSettings(map);
     });
   }, []);
@@ -1497,7 +1553,7 @@ function SettingsTab() {
 // ===================== EXPENSES TAB =====================
 function ExpensesTab() {
   const { lang } = useApp();
-  const [expenses, setExpenses] = useState<any[]>([]);
+  const [expenses, setExpenses] = useState<Expense[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({ type: 'salary', category: '', description: '', amount: '', payment_date: '' });
@@ -1540,7 +1596,7 @@ function ExpensesTab() {
     utility: tr('utility', lang), supplies: tr('supplies', lang), marketing: tr('marketing', lang),
     transport: tr('transport', lang), tax: tr('tax', lang), other: tr('other', lang),
   };
-  const typeIcons: Record<string, any> = {
+  const typeIcons: Record<string, typeof Wallet> = {
     salary: Wallet, personnel: Users, rent: Receipt, utility: Receipt,
     supplies: Package, marketing: Tag, transport: Truck, tax: DollarSign, other: Receipt,
   };

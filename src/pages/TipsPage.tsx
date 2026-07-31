@@ -18,7 +18,7 @@ const tipCategories = [
   { k: 'general', icon: '💡' },
 ];
 
-export function TipsPage({ navigate }: TipsPageProps) {
+export function TipsPage(_props: TipsPageProps) {
   const { lang } = useApp();
   const [tips, setTips] = useState<ExpertTip[]>([]);
   const [filter, setFilter] = useState('all');

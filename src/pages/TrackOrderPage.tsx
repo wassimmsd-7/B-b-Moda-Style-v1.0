@@ -20,7 +20,7 @@ const statusIcons: Record<string, typeof Package> = {
   returned: XCircle,
 };
 
-export function TrackOrderPage({ navigate }: TrackOrderPageProps) {
+export function TrackOrderPage(_props: TrackOrderPageProps) {
   const { lang } = useApp();
   const [search, setSearch] = useState('');
   const [order, setOrder] = useState<Order | null>(null);
@@ -63,6 +63,7 @@ export function TrackOrderPage({ navigate }: TrackOrderPageProps) {
       const timer = setTimeout(() => handleSearch(), 500);
       return () => clearTimeout(timer);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [search]);
 
   const currentStep = order ? statusFlow.indexOf(order.status) : -1;

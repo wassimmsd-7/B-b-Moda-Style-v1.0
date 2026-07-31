@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { ShoppingBag, Truck, Shield, Sparkles, ChevronRight } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
-import { tr, formatPrice, getProductName, getCategoryName } from '@/lib/utils';
+import { tr, getCategoryName } from '@/lib/utils';
 import { supabase } from '@/lib/supabase';
 import { ProductCard } from '@/components/ProductCard';
 import type { Product, Category, ExpertTip } from '@/lib/types';
