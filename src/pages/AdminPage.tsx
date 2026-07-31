@@ -2,19 +2,21 @@ import { useState, useEffect, useCallback } from 'react';
 import { useApp } from '@/context/AppContext';
 import { tr, formatPrice, formatDate, getProductName, getCategoryName, getStockStatus } from '@/lib/utils';
 import { supabase } from '@/lib/supabase';
+import { ImportExportButtons } from '@/components/ImportExportButtons';
+import { csvToNumber, csvToBool, csvToArray } from '@/lib/csv';
 import {
   LayoutDashboard, Package, ShoppingCart, Users, Truck, Tag, BarChart3,
   Settings, Menu, X, Plus, Edit2, Trash2, Search, AlertTriangle,
   TrendingUp, DollarSign, ShoppingBag, ArrowDownRight,
-  ClipboardList, Wallet, Receipt,
+  ClipboardList, Wallet, Receipt, ListChecks, Check, MapPin,
 } from 'lucide-react';
-import type { Product, Category, Order, OrderItem, Client, Supplier, Promotion, PurchaseOrder, PurchaseOrderItem, Expense } from '@/lib/types';
+import type { Product, Category, Order, OrderItem, Client, Supplier, Promotion, PurchaseOrder, PurchaseOrderItem, Expense, DeliveryZone } from '@/lib/types';
 
 interface AdminPageProps {
   navigate: (path: string) => void;
 }
 
-type AdminTab = 'dashboard' | 'products' | 'orders' | 'inventory' | 'clients' | 'suppliers' | 'promotions' | 'purchaseOrders' | 'analytics' | 'expenses' | 'reorder' | 'settings';
+type AdminTab = 'dashboard' | 'products' | 'orders' | 'inventory' | 'clients' | 'suppliers' | 'promotions' | 'purchaseOrders' | 'analytics' | 'expenses' | 'reorder' | 'deliveryZones' | 'categories' | 'settings';
 
 export function AdminPage({ navigate }: AdminPageProps) {
   const { lang, staffRole, setStaffRole } = useApp();
@@ -65,6 +67,8 @@ export function AdminPage({ navigate }: AdminPageProps) {
     { key: 'analytics', label: tr('analytics', lang), icon: BarChart3 },
     { key: 'expenses', label: tr('expenses2', lang), icon: Wallet },
     { key: 'reorder', label: tr('reorderList', lang), icon: ShoppingCart },
+    { key: 'deliveryZones', label: tr('deliveryZonesTab', lang), icon: MapPin },
+    { key: 'categories', label: tr('category', lang), icon: Tag },
     { key: 'settings', label: tr('settings', lang), icon: Settings },
   ];
 
@@ -153,6 +157,8 @@ export function AdminPage({ navigate }: AdminPageProps) {
           {tab === 'analytics' && <AnalyticsTab />}
           {tab === 'expenses' && <ExpensesTab />}
           {tab === 'reorder' && <ReorderTab navigate={navigate} />}
+          {tab === 'deliveryZones' && <DeliveryZonesTab />}
+          {tab === 'categories' && <CategoriesTab />}
           {tab === 'settings' && <SettingsTab />}
         </main>
       </div>
@@ -406,8 +412,69 @@ function ProductsTab() {
 
   const handleDelete = async (id: string) => {
     if (!confirm('Supprimer ce produit?')) return;
-    await supabase.from('products').delete().eq('id', id);
+    const { error } = await supabase.from('products').delete().eq('id', id);
+    if (error) { alert('Erreur lors de la suppression: ' + error.message); return; }
     load();
+  };
+
+  const productCsvColumns = [
+    { key: 'sku', header: 'sku' },
+    { key: 'name_fr', header: 'name_fr' },
+    { key: 'name_ar', header: 'name_ar' },
+    { key: 'category', header: 'category' },
+    { key: 'purchase_price', header: 'purchase_price' },
+    { key: 'selling_price', header: 'selling_price' },
+    { key: 'promo_price', header: 'promo_price' },
+    { key: 'stock', header: 'stock' },
+    { key: 'stock_min', header: 'stock_min' },
+    { key: 'gender', header: 'gender' },
+    { key: 'season', header: 'season' },
+    { key: 'sizes', header: 'sizes' },
+    { key: 'colors', header: 'colors' },
+    { key: 'is_active', header: 'is_active' },
+    { key: 'is_featured', header: 'is_featured' },
+  ];
+
+  const productExportRows = filtered.map((p) => ({
+    ...p,
+    category: categories.find((c) => c.id === p.category_id)?.name_fr || '',
+  }));
+
+  const handleImportProducts = async (rows: Record<string, string>[]) => {
+    let inserted = 0, updated = 0;
+    const errors: string[] = [];
+    for (const [i, row] of rows.entries()) {
+      if (!row.name_fr) { errors.push(`Ligne ${i + 2}: name_fr manquant`); continue; }
+      const category = categories.find((c) => c.name_fr.toLowerCase() === (row.category || '').toLowerCase());
+      const payload = {
+        sku: row.sku || null,
+        name_fr: row.name_fr,
+        name_ar: row.name_ar || null,
+        category_id: category?.id || null,
+        purchase_price: csvToNumber(row.purchase_price),
+        selling_price: csvToNumber(row.selling_price),
+        promo_price: row.promo_price ? csvToNumber(row.promo_price) : null,
+        stock: csvToNumber(row.stock),
+        stock_min: csvToNumber(row.stock_min, 5),
+        gender: (['boy', 'girl', 'unisex'].includes(row.gender) ? row.gender : 'unisex') as Product['gender'],
+        season: (['spring', 'summer', 'autumn', 'winter', 'all'].includes(row.season) ? row.season : 'all') as Product['season'],
+        sizes: csvToArray(row.sizes),
+        colors: csvToArray(row.colors),
+        is_active: csvToBool(row.is_active, true),
+        is_featured: csvToBool(row.is_featured, false),
+      };
+      // Upsert par SKU si fourni et existant, sinon création d'une nouvelle fiche produit.
+      const existing = row.sku ? products.find((p) => p.sku === row.sku) : undefined;
+      if (existing) {
+        const { error } = await supabase.from('products').update(payload).eq('id', existing.id);
+        if (error) errors.push(`Ligne ${i + 2} (${row.sku}): ${error.message}`); else updated++;
+      } else {
+        const { error } = await supabase.from('products').insert(payload);
+        if (error) errors.push(`Ligne ${i + 2} (${row.name_fr}): ${error.message}`); else inserted++;
+      }
+    }
+    await load();
+    return { inserted, updated, errors };
   };
 
   return (
@@ -423,6 +490,12 @@ function ProductsTab() {
             className="w-full pl-9 pr-4 py-2.5 rounded-xl bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-pink-500"
           />
         </div>
+        <ImportExportButtons
+          data={productExportRows}
+          columns={productCsvColumns}
+          filename="produits"
+          onImportRows={handleImportProducts}
+        />
         <button
           onClick={() => { setEditing(null); setShowForm(true); }}
           className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-pink-500 hover:bg-pink-600 text-white text-sm font-semibold transition-colors"
@@ -777,7 +850,8 @@ function OrdersTab() {
     if (status === 'shipped') updates.shipped_at = new Date().toISOString();
     if (status === 'delivered') updates.delivered_at = new Date().toISOString();
     if (status === 'cancelled') updates.cancelled_at = new Date().toISOString();
-    await supabase.from('orders').update(updates).eq('id', order.id);
+    const { error } = await supabase.from('orders').update(updates).eq('id', order.id);
+    if (error) { alert('Erreur lors de la mise à jour du statut: ' + error.message); return; }
     load();
     if (selected?.id === order.id) setSelected({ ...order, ...updates });
   };
@@ -933,7 +1007,8 @@ function InventoryTab() {
   });
 
   const updateStock = async (id: string, stock: number) => {
-    await supabase.from('products').update({ stock }).eq('id', id);
+    const { error } = await supabase.from('products').update({ stock }).eq('id', id);
+    if (error) { alert('Erreur lors de la mise à jour du stock: ' + error.message); return; }
     setProducts(products.map((p) => p.id === id ? { ...p, stock } : p));
   };
 
@@ -1005,23 +1080,67 @@ function ClientsTab() {
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    supabase.from('clients').select('*').order('created_at', { ascending: false }).then(({ data }) => {
-      setClients(data as Client[] || []);
-      setLoading(false);
-    });
+  const load = useCallback(async () => {
+    const { data } = await supabase.from('clients').select('*').order('created_at', { ascending: false });
+    setClients(data as Client[] || []);
+    setLoading(false);
   }, []);
+
+  useEffect(() => { load(); }, [load]);
 
   const filtered = clients.filter((c) =>
     c.name.toLowerCase().includes(search.toLowerCase()) ||
     c.phone?.includes(search),
   );
 
+  const clientCsvColumns = [
+    { key: 'name', header: 'name' },
+    { key: 'phone', header: 'phone' },
+    { key: 'phone2', header: 'phone2' },
+    { key: 'email', header: 'email' },
+    { key: 'wilaya', header: 'wilaya' },
+    { key: 'commune', header: 'commune' },
+    { key: 'address', header: 'address' },
+    { key: 'notes', header: 'notes' },
+  ];
+
+  const handleImportClients = async (rows: Record<string, string>[]) => {
+    let inserted = 0, updated = 0;
+    const errors: string[] = [];
+    for (const [i, row] of rows.entries()) {
+      if (!row.name) { errors.push(`Ligne ${i + 2}: nom manquant`); continue; }
+      const payload = {
+        name: row.name,
+        phone: row.phone || null,
+        phone2: row.phone2 || null,
+        email: row.email || null,
+        wilaya: row.wilaya || null,
+        commune: row.commune || null,
+        address: row.address || null,
+        notes: row.notes || null,
+      };
+      // Upsert par numéro de téléphone (identifiant naturel côté boutique)
+      const existing = row.phone ? clients.find((c) => c.phone === row.phone) : undefined;
+      if (existing) {
+        const { error } = await supabase.from('clients').update(payload).eq('id', existing.id);
+        if (error) errors.push(`Ligne ${i + 2} (${row.phone}): ${error.message}`); else updated++;
+      } else {
+        const { error } = await supabase.from('clients').insert(payload);
+        if (error) errors.push(`Ligne ${i + 2} (${row.name}): ${error.message}`); else inserted++;
+      }
+    }
+    await load();
+    return { inserted, updated, errors };
+  };
+
   return (
     <div className="space-y-4">
-      <div className="relative">
-        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-        <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder={tr('search', lang)} className="w-full pl-9 pr-4 py-2.5 rounded-xl bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-pink-500" />
+      <div className="flex flex-col sm:flex-row gap-3">
+        <div className="relative flex-1">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+          <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder={tr('search', lang)} className="w-full pl-9 pr-4 py-2.5 rounded-xl bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-pink-500" />
+        </div>
+        <ImportExportButtons data={filtered} columns={clientCsvColumns} filename="clients" onImportRows={handleImportClients} />
       </div>
 
       {loading ? (
@@ -1076,13 +1195,55 @@ function SuppliersTab() {
 
   const handleDelete = async (id: string) => {
     if (!confirm('Supprimer?')) return;
-    await supabase.from('suppliers').delete().eq('id', id);
+    const { error } = await supabase.from('suppliers').delete().eq('id', id);
+    if (error) { alert('Erreur lors de la suppression: ' + error.message); return; }
     load();
+  };
+
+  const supplierCsvColumns = [
+    { key: 'name', header: 'name' },
+    { key: 'contact_name', header: 'contact_name' },
+    { key: 'phone', header: 'phone' },
+    { key: 'phone2', header: 'phone2' },
+    { key: 'email', header: 'email' },
+    { key: 'city', header: 'city' },
+    { key: 'address', header: 'address' },
+    { key: 'notes', header: 'notes' },
+  ];
+
+  const handleImportSuppliers = async (rows: Record<string, string>[]) => {
+    let inserted = 0, updated = 0;
+    const errors: string[] = [];
+    for (const [i, row] of rows.entries()) {
+      if (!row.name) { errors.push(`Ligne ${i + 2}: nom manquant`); continue; }
+      const payload = {
+        name: row.name,
+        contact_name: row.contact_name || null,
+        phone: row.phone || null,
+        phone2: row.phone2 || null,
+        email: row.email || null,
+        city: row.city || null,
+        address: row.address || null,
+        notes: row.notes || null,
+      };
+      // Upsert par nom du fournisseur (identifiant naturel)
+      const existing = suppliers.find((s) => s.name.toLowerCase() === row.name.toLowerCase());
+      if (existing) {
+        const { error } = await supabase.from('suppliers').update(payload).eq('id', existing.id);
+        if (error) errors.push(`Ligne ${i + 2} (${row.name}): ${error.message}`); else updated++;
+      } else {
+        const { error } = await supabase.from('suppliers').insert(payload);
+        if (error) errors.push(`Ligne ${i + 2} (${row.name}): ${error.message}`); else inserted++;
+      }
+    }
+    await load();
+    return { inserted, updated, errors };
   };
 
   return (
     <div className="space-y-4">
-      <div className="flex justify-end">
+      <div className="flex justify-end gap-2">
+        <ImportExportButtons data={suppliers} columns={supplierCsvColumns} filename="fournisseurs" onImportRows={handleImportSuppliers} />
         <button onClick={() => { setEditing(null); setShowForm(true); }} className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-pink-500 hover:bg-pink-600 text-white text-sm font-semibold">
           <Plus className="w-4 h-4" /> {tr('add', lang)}
         </button>
@@ -1184,7 +1345,8 @@ function PromotionsTab() {
 
   const handleDelete = async (id: string) => {
     if (!confirm('Supprimer?')) return;
-    await supabase.from('promotions').delete().eq('id', id);
+    const { error } = await supabase.from('promotions').delete().eq('id', id);
+    if (error) { alert('Erreur lors de la suppression: ' + error.message); return; }
     load();
   };
 
@@ -1330,18 +1492,25 @@ function PurchaseOrdersTab() {
   const changeStatus = async (po: PurchaseOrder, status: PurchaseOrder['status']) => {
     // When marking as received, restock products for the not-yet-received quantity
     if (status === 'received' && po.status !== 'received') {
+      const restockErrors: string[] = [];
       for (const item of selectedItems) {
         if (!item.product_id) continue;
         const remaining = item.quantity_ordered - (item.quantity_received || 0);
         if (remaining <= 0) continue;
         const { data: prod } = await supabase.from('products').select('stock').eq('id', item.product_id).maybeSingle();
         if (prod) {
-          await supabase.from('products').update({ stock: prod.stock + remaining }).eq('id', item.product_id);
+          const { error: stockErr } = await supabase.from('products').update({ stock: prod.stock + remaining }).eq('id', item.product_id);
+          if (stockErr) restockErrors.push(`${item.product_name}: ${stockErr.message}`);
         }
-        await supabase.from('purchase_order_items').update({ quantity_received: item.quantity_ordered }).eq('id', item.id);
+        const { error: itemErr } = await supabase.from('purchase_order_items').update({ quantity_received: item.quantity_ordered }).eq('id', item.id);
+        if (itemErr) restockErrors.push(`${item.product_name}: ${itemErr.message}`);
+      }
+      if (restockErrors.length > 0) {
+        alert('Certains articles n\'ont pas pu être remis en stock:\n' + restockErrors.join('\n'));
       }
     }
-    await supabase.from('purchase_orders').update({ status, received_at: status === 'received' ? new Date().toISOString() : po.received_at }).eq('id', po.id);
+    const { error } = await supabase.from('purchase_orders').update({ status, received_at: status === 'received' ? new Date().toISOString() : po.received_at }).eq('id', po.id);
+    if (error) { alert('Erreur lors de la mise à jour du bon de commande: ' + error.message); return; }
     setSelectedPO(null);
     load();
   };
@@ -1458,6 +1627,7 @@ function PurchaseOrderForm({ suppliers, products, initialSupplierId, initialItem
   const [supplierId, setSupplierId] = useState(initialSupplierId || '');
   const [items, setItems] = useState<{ productId: string; qty: number; price: number }[]>(initialItems && initialItems.length > 0 ? initialItems : []);
   const [notes, setNotes] = useState('');
+  const [showMultiPicker, setShowMultiPicker] = useState(false);
 
   const addItem = () => setItems([...items, { productId: '', qty: 1, price: 0 }]);
   const removeItem = (i: number) => setItems(items.filter((_, idx) => idx !== i));
@@ -1470,6 +1640,22 @@ function PurchaseOrderForm({ suppliers, products, initialSupplierId, initialItem
       }
       return { ...item, [field]: Number(value) };
     }));
+  };
+
+  // Ajoute d'un coup plusieurs produits choisis dans le sélecteur multiple,
+  // en évitant les doublons avec les lignes déjà présentes et en ignorant
+  // les lignes vides existantes.
+  const addSelectedProducts = (productIds: string[]) => {
+    const existingIds = new Set(items.map((i) => i.productId).filter(Boolean));
+    const newRows = productIds
+      .filter((id) => !existingIds.has(id))
+      .map((id) => {
+        const p = products.find((pr) => pr.id === id);
+        return { productId: id, qty: 1, price: p?.purchase_price || 0 };
+      });
+    const cleanedItems = items.filter((i) => i.productId); // retire les lignes vides laissées par "+ Ajouter"
+    setItems([...cleanedItems, ...newRows]);
+    setShowMultiPicker(false);
   };
 
   const total = items.reduce((s, i) => s + i.qty * i.price, 0);
@@ -1525,7 +1711,12 @@ function PurchaseOrderForm({ suppliers, products, initialSupplierId, initialItem
           <div>
             <div className="flex items-center justify-between mb-2">
               <h3 className="font-semibold text-sm text-gray-900 dark:text-white">Articles</h3>
-              <button onClick={addItem} className="text-sm text-pink-500 font-medium">+ Ajouter</button>
+              <div className="flex items-center gap-3">
+                <button onClick={() => setShowMultiPicker(true)} className="flex items-center gap-1.5 text-sm text-pink-500 font-medium">
+                  <ListChecks className="w-4 h-4" /> Sélectionner plusieurs produits
+                </button>
+                <button onClick={addItem} className="text-sm text-pink-500 font-medium">+ Ajouter</button>
+              </div>
             </div>
             <div className="space-y-2">
               {items.map((item, i) => (
@@ -1539,8 +1730,20 @@ function PurchaseOrderForm({ suppliers, products, initialSupplierId, initialItem
                   <button onClick={() => removeItem(i)} className="p-1.5 text-gray-400 hover:text-red-500"><Trash2 className="w-4 h-4" /></button>
                 </div>
               ))}
+              {items.length === 0 && (
+                <p className="text-xs text-gray-400 py-2">Aucun article. Utilisez "Sélectionner plusieurs produits" pour en ajouter plusieurs d'un coup, ou "+ Ajouter" pour une ligne à la fois.</p>
+              )}
             </div>
           </div>
+
+          {showMultiPicker && (
+            <ProductMultiSelectModal
+              products={products}
+              alreadySelectedIds={items.map((i) => i.productId).filter(Boolean)}
+              onClose={() => setShowMultiPicker(false)}
+              onConfirm={addSelectedProducts}
+            />
+          )}
 
           <div className="flex justify-between font-bold text-gray-900 dark:text-white pt-3 border-t border-gray-100 dark:border-gray-700">
             <span>Total</span>
@@ -1552,6 +1755,106 @@ function PurchaseOrderForm({ suppliers, products, initialSupplierId, initialItem
         <div className="sticky bottom-0 bg-white dark:bg-gray-800 px-5 py-4 border-t border-gray-100 dark:border-gray-700 flex gap-3 justify-end">
           <button onClick={onClose} className="px-4 py-2.5 rounded-xl text-sm font-medium text-gray-600 dark:text-gray-300 border border-gray-200 dark:border-gray-700">Annuler</button>
           <button onClick={handleSave} className="px-4 py-2.5 rounded-xl bg-pink-500 text-white text-sm font-semibold">Enregistrer</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ───────────── SÉLECTEUR MULTIPLE DE PRODUITS ─────────────
+// Utilisé dans le bon de commande fournisseur pour ajouter plusieurs
+// produits en une seule fois (au lieu de les ajouter un par un).
+function ProductMultiSelectModal({ products, alreadySelectedIds, onClose, onConfirm }: {
+  products: Product[];
+  alreadySelectedIds: string[];
+  onClose: () => void;
+  onConfirm: (productIds: string[]) => void;
+}) {
+  const [search, setSearch] = useState('');
+  const [checked, setChecked] = useState<Set<string>>(new Set());
+
+  const filtered = products.filter((p) =>
+    p.name_fr.toLowerCase().includes(search.toLowerCase()) ||
+    p.sku?.toLowerCase().includes(search.toLowerCase()),
+  );
+
+  const toggle = (id: string) => {
+    setChecked((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleAllFiltered = () => {
+    const allFilteredChecked = filtered.every((p) => checked.has(p.id));
+    setChecked((prev) => {
+      const next = new Set(prev);
+      filtered.forEach((p) => { if (allFilteredChecked) next.delete(p.id); else next.add(p.id); });
+      return next;
+    });
+  };
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/50">
+      <div className="bg-white dark:bg-gray-800 rounded-2xl w-full max-w-lg max-h-[85vh] flex flex-col">
+        <div className="px-5 py-4 border-b border-gray-100 dark:border-gray-700 flex items-center justify-between shrink-0">
+          <h2 className="font-bold text-gray-900 dark:text-white">Sélectionner des produits</h2>
+          <button onClick={onClose} className="p-1 text-gray-400"><X className="w-5 h-5" /></button>
+        </div>
+        <div className="p-4 border-b border-gray-100 dark:border-gray-700 shrink-0 space-y-2">
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+            <input
+              autoFocus
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Rechercher un produit ou un SKU..."
+              className="w-full pl-9 pr-4 py-2.5 rounded-xl bg-gray-50 dark:bg-gray-900 border border-gray-100 dark:border-gray-700 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-pink-500"
+            />
+          </div>
+          <div className="flex items-center justify-between text-xs text-gray-500">
+            <button onClick={toggleAllFiltered} className="text-pink-500 font-medium">
+              {filtered.every((p) => checked.has(p.id)) && filtered.length > 0 ? 'Tout désélectionner' : 'Tout sélectionner (résultats affichés)'}
+            </button>
+            <span>{checked.size} sélectionné(s)</span>
+          </div>
+        </div>
+        <div className="flex-1 overflow-y-auto p-2">
+          {filtered.length === 0 ? (
+            <div className="text-center text-gray-400 py-8 text-sm">Aucun produit trouvé.</div>
+          ) : (
+            filtered.map((p) => {
+              const isChecked = checked.has(p.id);
+              const isAlreadyInPO = alreadySelectedIds.includes(p.id);
+              return (
+                <label
+                  key={p.id}
+                  className={`flex items-center gap-3 px-3 py-2.5 rounded-xl cursor-pointer ${isChecked ? 'bg-pink-50 dark:bg-pink-900/20' : 'hover:bg-gray-50 dark:hover:bg-gray-900'}`}
+                >
+                  <input type="checkbox" checked={isChecked} onChange={() => toggle(p.id)} className="w-4 h-4 accent-pink-500" />
+                  <div className="w-9 h-9 rounded-lg bg-gray-100 dark:bg-gray-700 overflow-hidden shrink-0">
+                    {p.images?.[0] && <img src={p.images[0]} alt="" className="w-full h-full object-cover" />}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium text-gray-900 dark:text-white truncate">{p.name_fr}</div>
+                    <div className="text-xs text-gray-400">{p.sku || '—'} · Stock {p.stock} · {formatPrice(p.purchase_price)}</div>
+                  </div>
+                  {isAlreadyInPO && <span className="flex items-center gap-1 text-[10px] text-green-600 dark:text-green-400 shrink-0"><Check className="w-3 h-3" /> déjà ajouté</span>}
+                </label>
+              );
+            })
+          )}
+        </div>
+        <div className="px-5 py-4 border-t border-gray-100 dark:border-gray-700 flex gap-3 justify-end shrink-0">
+          <button onClick={onClose} className="px-4 py-2.5 rounded-xl text-sm font-medium text-gray-600 dark:text-gray-300 border border-gray-200 dark:border-gray-700">Annuler</button>
+          <button
+            onClick={() => onConfirm(Array.from(checked))}
+            disabled={checked.size === 0}
+            className="px-4 py-2.5 rounded-xl bg-pink-500 text-white text-sm font-semibold disabled:opacity-50"
+          >
+            Ajouter {checked.size > 0 ? `(${checked.size})` : ''}
+          </button>
         </div>
       </div>
     </div>
@@ -1656,6 +1959,343 @@ function AnalyticsTab() {
   );
 }
 
+// ───────────── DELIVERY ZONES TAB ─────────────
+const ALGERIA_WILAYAS: { code: string; name: string }[] = [
+  { code: '01', name: 'Adrar' }, { code: '02', name: 'Chlef' }, { code: '03', name: 'Laghouat' },
+  { code: '04', name: 'Oum El Bouaghi' }, { code: '05', name: 'Batna' }, { code: '06', name: 'Béjaïa' },
+  { code: '07', name: 'Biskra' }, { code: '08', name: 'Béchar' }, { code: '09', name: 'Blida' },
+  { code: '10', name: 'Bouira' }, { code: '11', name: 'Tamanrasset' }, { code: '12', name: 'Tébessa' },
+  { code: '13', name: 'Tlemcen' }, { code: '14', name: 'Tiaret' }, { code: '15', name: 'Tizi Ouzou' },
+  { code: '16', name: 'Alger' }, { code: '17', name: 'Djelfa' }, { code: '18', name: 'Jijel' },
+  { code: '19', name: 'Sétif' }, { code: '20', name: 'Saïda' }, { code: '21', name: 'Skikda' },
+  { code: '22', name: 'Sidi Bel Abbès' }, { code: '23', name: 'Annaba' }, { code: '24', name: 'Guelma' },
+  { code: '25', name: 'Constantine' }, { code: '26', name: 'Médéa' }, { code: '27', name: 'Mostaganem' },
+  { code: '28', name: "M'Sila" }, { code: '29', name: 'Mascara' }, { code: '30', name: 'Ouargla' },
+  { code: '31', name: 'Oran' }, { code: '32', name: 'El Bayadh' }, { code: '33', name: 'Illizi' },
+  { code: '34', name: 'Bordj Bou Arréridj' }, { code: '35', name: 'Boumerdès' }, { code: '36', name: 'El Tarf' },
+  { code: '37', name: 'Tindouf' }, { code: '38', name: 'Tissemsilt' }, { code: '39', name: 'El Oued' },
+  { code: '40', name: 'Khenchela' }, { code: '41', name: 'Souk Ahras' }, { code: '42', name: 'Tipaza' },
+  { code: '43', name: 'Mila' }, { code: '44', name: 'Aïn Defla' }, { code: '45', name: 'Naâma' },
+  { code: '46', name: 'Aïn Témouchent' }, { code: '47', name: 'Ghardaïa' }, { code: '48', name: 'Relizane' },
+  { code: '49', name: 'Timimoun' }, { code: '50', name: 'Bordj Badji Mokhtar' }, { code: '51', name: 'Ouled Djellal' },
+  { code: '52', name: 'Béni Abbès' }, { code: '53', name: 'In Salah' }, { code: '54', name: 'In Guezzam' },
+  { code: '55', name: 'Touggourt' }, { code: '56', name: 'Djanet' }, { code: '57', name: "El M'Ghair" },
+  { code: '58', name: 'El Meniaa' },
+];
+
+function DeliveryZonesTab() {
+  const { lang } = useApp();
+  const [zones, setZones] = useState<DeliveryZone[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [editing, setEditing] = useState<DeliveryZone | null>(null);
+  const [showForm, setShowForm] = useState(false);
+  const [seeding, setSeeding] = useState(false);
+
+  const load = useCallback(async () => {
+    const { data } = await supabase.from('delivery_zones').select('*').order('wilaya_code');
+    setZones(data || []);
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const handleDelete = async (id: string) => {
+    if (!confirm('Supprimer cette zone?')) return;
+    const { error } = await supabase.from('delivery_zones').delete().eq('id', id);
+    if (error) { alert('Erreur lors de la suppression: ' + error.message); return; }
+    load();
+  };
+
+  const toggleActive = async (zone: DeliveryZone) => {
+    const { error } = await supabase.from('delivery_zones').update({ active: !zone.active }).eq('id', zone.id);
+    if (error) { alert('Erreur: ' + error.message); return; }
+    load();
+  };
+
+  const seedAllWilayas = async () => {
+    if (!confirm('Ajouter les 58 wilayas d\'Algérie (tarifs à 0 DA, à modifier ensuite)?')) return;
+    setSeeding(true);
+    const existingCodes = new Set(zones.map((z) => z.wilaya_code));
+    const toAdd = ALGERIA_WILAYAS.filter((w) => !existingCodes.has(w.code)).map((w) => ({
+      wilaya_code: w.code, wilaya_name: w.name, home_price: 0, desk_price: 0, days_min: 2, days_max: 5, active: true,
+    }));
+    if (toAdd.length > 0) {
+      const { error } = await supabase.from('delivery_zones').insert(toAdd);
+      if (error) { alert('Erreur: ' + error.message); setSeeding(false); return; }
+    }
+    setSeeding(false);
+    load();
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-col sm:flex-row justify-between gap-3">
+        <p className="text-sm text-gray-500 dark:text-gray-400">{zones.length} {tr('deliveryZonesTab', lang)}</p>
+        <div className="flex gap-2">
+          <button onClick={seedAllWilayas} disabled={seeding} className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300 text-sm font-medium disabled:opacity-50">
+            {seeding ? '...' : `+ 58 wilayas`}
+          </button>
+          <button onClick={() => { setEditing(null); setShowForm(true); }} className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-pink-500 hover:bg-pink-600 text-white text-sm font-semibold">
+            <Plus className="w-4 h-4" /> {tr('add', lang)}
+          </button>
+        </div>
+      </div>
+
+      {zones.length === 0 && !loading && (
+        <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-2xl p-4 text-sm text-amber-700 dark:text-amber-400">
+          Aucune zone de livraison configurée : vos clients ne peuvent pas commander en livraison à domicile/bureau tant qu'il n'y a pas au moins une zone active. Cliquez sur "+ 58 wilayas" pour les ajouter d'un coup, puis ajustez les tarifs.
+        </div>
+      )}
+
+      {loading ? (
+        <div className="text-center text-gray-400 py-12">{tr('loading', lang)}</div>
+      ) : (
+        <div className="bg-white dark:bg-gray-800 rounded-2xl border border-gray-100 dark:border-gray-700 overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50 dark:bg-gray-900">
+                <tr>
+                  <th className="text-left px-4 py-3 font-medium text-gray-500">Wilaya</th>
+                  <th className="text-center px-4 py-3 font-medium text-gray-500">Domicile</th>
+                  <th className="text-center px-4 py-3 font-medium text-gray-500">Bureau</th>
+                  <th className="text-center px-4 py-3 font-medium text-gray-500 hidden sm:table-cell">Délai</th>
+                  <th className="text-center px-4 py-3 font-medium text-gray-500">Actif</th>
+                  <th className="text-right px-4 py-3 font-medium text-gray-500">{tr('actions', lang)}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {zones.map((z) => (
+                  <tr key={z.id} className="border-t border-gray-50 dark:border-gray-700">
+                    <td className="px-4 py-3 font-medium text-gray-900 dark:text-white">{z.wilaya_code} - {z.wilaya_name}</td>
+                    <td className="px-4 py-3 text-center text-gray-600 dark:text-gray-300">{formatPrice(z.home_price)}</td>
+                    <td className="px-4 py-3 text-center text-gray-600 dark:text-gray-300">{formatPrice(z.desk_price)}</td>
+                    <td className="px-4 py-3 text-center text-gray-500 hidden sm:table-cell">{z.days_min}-{z.days_max}j</td>
+                    <td className="px-4 py-3 text-center">
+                      <button onClick={() => toggleActive(z)} className={`px-2 py-0.5 rounded-full text-xs font-medium ${z.active ? 'bg-green-100 text-green-600 dark:bg-green-900/30' : 'bg-gray-100 text-gray-500 dark:bg-gray-700'}`}>
+                        {z.active ? 'Actif' : 'Inactif'}
+                      </button>
+                    </td>
+                    <td className="px-4 py-3 text-right">
+                      <div className="flex justify-end gap-2">
+                        <button onClick={() => { setEditing(z); setShowForm(true); }} className="p-1.5 text-gray-400 hover:text-pink-500"><Edit2 className="w-4 h-4" /></button>
+                        <button onClick={() => handleDelete(z.id)} className="p-1.5 text-gray-400 hover:text-red-500"><Trash2 className="w-4 h-4" /></button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {showForm && <DeliveryZoneForm zone={editing} onClose={() => setShowForm(false)} onSaved={() => { setShowForm(false); load(); }} />}
+    </div>
+  );
+}
+
+function DeliveryZoneForm({ zone, onClose, onSaved }: { zone: DeliveryZone | null; onClose: () => void; onSaved: () => void }) {
+  const { lang } = useApp();
+  const [form, setForm] = useState({
+    wilaya_code: zone?.wilaya_code || '',
+    wilaya_name: zone?.wilaya_name || '',
+    home_price: zone?.home_price?.toString() || '0',
+    desk_price: zone?.desk_price?.toString() || '0',
+    days_min: zone?.days_min?.toString() || '2',
+    days_max: zone?.days_max?.toString() || '5',
+    active: zone?.active ?? true,
+  });
+  const [saving, setSaving] = useState(false);
+
+  const handleSave = async () => {
+    if (!form.wilaya_name.trim() || !form.wilaya_code.trim()) { alert('Le code et le nom de la wilaya sont requis.'); return; }
+    setSaving(true);
+    const payload = {
+      wilaya_code: form.wilaya_code.trim(),
+      wilaya_name: form.wilaya_name.trim(),
+      home_price: Number(form.home_price) || 0,
+      desk_price: Number(form.desk_price) || 0,
+      days_min: Number(form.days_min) || 1,
+      days_max: Number(form.days_max) || 5,
+      active: form.active,
+    };
+    const { error } = zone
+      ? await supabase.from('delivery_zones').update(payload).eq('id', zone.id)
+      : await supabase.from('delivery_zones').insert(payload);
+    setSaving(false);
+    if (error) { alert('Erreur: ' + error.message); return; }
+    onSaved();
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
+      <div className="bg-white dark:bg-gray-800 rounded-2xl w-full max-w-md max-h-[90vh] overflow-y-auto">
+        <div className="sticky top-0 bg-white dark:bg-gray-800 px-5 py-4 border-b border-gray-100 dark:border-gray-700 flex items-center justify-between">
+          <h2 className="font-bold text-gray-900 dark:text-white">{zone ? tr('edit', lang) : tr('add', lang)} — Zone de livraison</h2>
+          <button onClick={onClose} className="p-1 text-gray-400"><X className="w-5 h-5" /></button>
+        </div>
+        <div className="p-5 space-y-3">
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Code wilaya"><input value={form.wilaya_code} onChange={(e) => setForm({ ...form, wilaya_code: e.target.value })} className="input" placeholder="16" /></Field>
+            <Field label="Nom wilaya"><input value={form.wilaya_name} onChange={(e) => setForm({ ...form, wilaya_name: e.target.value })} className="input" placeholder="Alger" /></Field>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Prix domicile (DA)"><input type="number" value={form.home_price} onChange={(e) => setForm({ ...form, home_price: e.target.value })} className="input" /></Field>
+            <Field label="Prix bureau (DA)"><input type="number" value={form.desk_price} onChange={(e) => setForm({ ...form, desk_price: e.target.value })} className="input" /></Field>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Délai min (jours)"><input type="number" value={form.days_min} onChange={(e) => setForm({ ...form, days_min: e.target.value })} className="input" /></Field>
+            <Field label="Délai max (jours)"><input type="number" value={form.days_max} onChange={(e) => setForm({ ...form, days_max: e.target.value })} className="input" /></Field>
+          </div>
+          <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+            <input type="checkbox" checked={form.active} onChange={(e) => setForm({ ...form, active: e.target.checked })} className="w-4 h-4 accent-pink-500" />
+            Zone active (visible au checkout)
+          </label>
+        </div>
+        <div className="sticky bottom-0 bg-white dark:bg-gray-800 px-5 py-4 border-t border-gray-100 dark:border-gray-700 flex gap-3 justify-end">
+          <button onClick={onClose} className="px-4 py-2.5 rounded-xl text-sm font-medium text-gray-600 dark:text-gray-300 border border-gray-200 dark:border-gray-700">{tr('cancel', lang)}</button>
+          <button disabled={saving} onClick={handleSave} className="px-4 py-2.5 rounded-xl bg-pink-500 text-white text-sm font-semibold disabled:opacity-60">{saving ? '...' : tr('save', lang)}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ───────────── CATEGORIES TAB ─────────────
+function CategoriesTab() {
+  const { lang } = useApp();
+  const [categories, setCategories] = useState<Category[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [editing, setEditing] = useState<Category | null>(null);
+  const [showForm, setShowForm] = useState(false);
+
+  const load = useCallback(async () => {
+    const { data } = await supabase.from('categories').select('*').order('sort_order');
+    setCategories(data || []);
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const handleDelete = async (id: string) => {
+    if (!confirm('Supprimer cette catégorie? Les produits qui l\'utilisent ne seront pas supprimés, mais perdront leur catégorie.')) return;
+    const { error } = await supabase.from('categories').delete().eq('id', id);
+    if (error) { alert('Erreur lors de la suppression: ' + error.message); return; }
+    load();
+  };
+
+  const toggleActive = async (cat: Category) => {
+    const { error } = await supabase.from('categories').update({ active: !cat.active }).eq('id', cat.id);
+    if (error) { alert('Erreur: ' + error.message); return; }
+    load();
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex justify-between items-center">
+        <p className="text-sm text-gray-500 dark:text-gray-400">{categories.length} {tr('category', lang)}</p>
+        <button onClick={() => { setEditing(null); setShowForm(true); }} className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-pink-500 hover:bg-pink-600 text-white text-sm font-semibold">
+          <Plus className="w-4 h-4" /> {tr('add', lang)}
+        </button>
+      </div>
+
+      {loading ? (
+        <div className="text-center text-gray-400 py-12">{tr('loading', lang)}</div>
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          {categories.map((c) => (
+            <div key={c.id} className="bg-white dark:bg-gray-800 rounded-2xl p-4 border border-gray-100 dark:border-gray-700 flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl flex items-center justify-center text-white font-bold" style={{ backgroundColor: c.color || '#ec4899' }}>
+                {getCategoryName(c, lang).charAt(0).toUpperCase()}
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="font-semibold text-gray-900 dark:text-white truncate">{getCategoryName(c, lang)}</div>
+                <button onClick={() => toggleActive(c)} className={`text-xs font-medium ${c.active ? 'text-green-500' : 'text-gray-400'}`}>
+                  {c.active ? 'Active' : 'Inactive'}
+                </button>
+              </div>
+              <div className="flex gap-1">
+                <button onClick={() => { setEditing(c); setShowForm(true); }} className="p-1.5 text-gray-400 hover:text-pink-500"><Edit2 className="w-4 h-4" /></button>
+                <button onClick={() => handleDelete(c.id)} className="p-1.5 text-gray-400 hover:text-red-500"><Trash2 className="w-4 h-4" /></button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {showForm && <CategoryForm category={editing} onClose={() => setShowForm(false)} onSaved={() => { setShowForm(false); load(); }} />}
+    </div>
+  );
+}
+
+function CategoryForm({ category, onClose, onSaved }: { category: Category | null; onClose: () => void; onSaved: () => void }) {
+  const { lang } = useApp();
+  const [form, setForm] = useState({
+    name_fr: category?.name_fr || '',
+    name_ar: category?.name_ar || '',
+    name_en: category?.name_en || '',
+    name_dz: category?.name_dz || '',
+    icon: category?.icon || '',
+    color: category?.color || '#ec4899',
+    sort_order: category?.sort_order?.toString() || '0',
+    active: category?.active ?? true,
+  });
+  const [saving, setSaving] = useState(false);
+
+  const handleSave = async () => {
+    if (!form.name_fr.trim()) { alert('Le nom (français) est requis.'); return; }
+    setSaving(true);
+    const payload = {
+      name_fr: form.name_fr.trim(),
+      name_ar: form.name_ar.trim() || null,
+      name_en: form.name_en.trim() || null,
+      name_dz: form.name_dz.trim() || null,
+      icon: form.icon.trim() || null,
+      color: form.color,
+      sort_order: Number(form.sort_order) || 0,
+      active: form.active,
+    };
+    const { error } = category
+      ? await supabase.from('categories').update(payload).eq('id', category.id)
+      : await supabase.from('categories').insert(payload);
+    setSaving(false);
+    if (error) { alert('Erreur: ' + error.message); return; }
+    onSaved();
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
+      <div className="bg-white dark:bg-gray-800 rounded-2xl w-full max-w-md max-h-[90vh] overflow-y-auto">
+        <div className="sticky top-0 bg-white dark:bg-gray-800 px-5 py-4 border-b border-gray-100 dark:border-gray-700 flex items-center justify-between">
+          <h2 className="font-bold text-gray-900 dark:text-white">{category ? tr('edit', lang) : tr('add', lang)} — {tr('category', lang)}</h2>
+          <button onClick={onClose} className="p-1 text-gray-400"><X className="w-5 h-5" /></button>
+        </div>
+        <div className="p-5 space-y-3">
+          <Field label="Nom (français)"><input value={form.name_fr} onChange={(e) => setForm({ ...form, name_fr: e.target.value })} className="input" /></Field>
+          <Field label="Nom (arabe)"><input dir="rtl" value={form.name_ar} onChange={(e) => setForm({ ...form, name_ar: e.target.value })} className="input" /></Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Nom (anglais)"><input value={form.name_en} onChange={(e) => setForm({ ...form, name_en: e.target.value })} className="input" /></Field>
+            <Field label="Nom (darija)"><input value={form.name_dz} onChange={(e) => setForm({ ...form, name_dz: e.target.value })} className="input" /></Field>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Icône (lucide, ex: shirt)"><input value={form.icon} onChange={(e) => setForm({ ...form, icon: e.target.value })} className="input" placeholder="shirt" /></Field>
+            <Field label="Couleur"><input type="color" value={form.color} onChange={(e) => setForm({ ...form, color: e.target.value })} className="input h-11 p-1" /></Field>
+          </div>
+          <Field label="Ordre d'affichage"><input type="number" value={form.sort_order} onChange={(e) => setForm({ ...form, sort_order: e.target.value })} className="input" /></Field>
+          <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+            <input type="checkbox" checked={form.active} onChange={(e) => setForm({ ...form, active: e.target.checked })} className="w-4 h-4 accent-pink-500" />
+            Catégorie active (visible sur le site)
+          </label>
+        </div>
+        <div className="sticky bottom-0 bg-white dark:bg-gray-800 px-5 py-4 border-t border-gray-100 dark:border-gray-700 flex gap-3 justify-end">
+          <button onClick={onClose} className="px-4 py-2.5 rounded-xl text-sm font-medium text-gray-600 dark:text-gray-300 border border-gray-200 dark:border-gray-700">{tr('cancel', lang)}</button>
+          <button disabled={saving} onClick={handleSave} className="px-4 py-2.5 rounded-xl bg-pink-500 text-white text-sm font-semibold disabled:opacity-60">{saving ? '...' : tr('save', lang)}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ───────────── SETTINGS TAB ─────────────
 function SettingsTab() {
   const { lang } = useApp();
@@ -1672,10 +2312,17 @@ function SettingsTab() {
 
   const handleSave = async () => {
     setSaving(true);
+    const errors: string[] = [];
     for (const [key, value] of Object.entries(settings)) {
-      await supabase.from('settings').upsert({ key, value, updated_at: new Date().toISOString() });
+      const { error } = await supabase.from('settings').upsert({ key, value, updated_at: new Date().toISOString() });
+      if (error) errors.push(`${key}: ${error.message}`);
     }
     setSaving(false);
+    if (errors.length > 0) {
+      alert('Erreur lors de la sauvegarde de certains paramètres:\n' + errors.join('\n'));
+    } else {
+      alert('Paramètres enregistrés.');
+    }
   };
 
   const fields = [
@@ -1732,13 +2379,14 @@ function ExpensesTab() {
 
   const handleSave = async () => {
     if (!form.amount || !form.payment_date) return;
-    await supabase.from('expenses').insert({
+    const { error } = await supabase.from('expenses').insert({
       type: form.type,
       category: form.category || null,
       description: form.description || null,
       amount: Number(form.amount),
       payment_date: form.payment_date,
     });
+    if (error) { alert('Erreur lors de l\'ajout de la dépense: ' + error.message); return; }
     setForm({ type: 'salary', category: '', description: '', amount: '', payment_date: '' });
     setShowForm(false);
     load();
@@ -1746,7 +2394,8 @@ function ExpensesTab() {
 
   const handleDelete = async (id: string) => {
     if (!confirm('Supprimer cette depense?')) return;
-    await supabase.from('expenses').delete().eq('id', id);
+    const { error } = await supabase.from('expenses').delete().eq('id', id);
+    if (error) { alert('Erreur lors de la suppression: ' + error.message); return; }
     load();
   };
 
@@ -1761,6 +2410,38 @@ function ExpensesTab() {
     supplies: Package, marketing: Tag, transport: Truck, tax: DollarSign, other: Receipt,
   };
 
+  const expenseCsvColumns = [
+    { key: 'type', header: 'type' },
+    { key: 'category', header: 'category' },
+    { key: 'description', header: 'description' },
+    { key: 'amount', header: 'amount' },
+    { key: 'payment_date', header: 'payment_date' },
+  ];
+  const validExpenseTypes = ['personnel', 'salary', 'rent', 'utility', 'supplies', 'marketing', 'transport', 'tax', 'other'];
+
+  const handleImportExpenses = async (rows: Record<string, string>[]) => {
+    // Les dépenses n'ont pas de clé naturelle unique : chaque ligne importée crée une nouvelle dépense.
+    let inserted = 0;
+    const errors: string[] = [];
+    const toInsert: Record<string, unknown>[] = [];
+    rows.forEach((row, i) => {
+      if (!row.amount || !row.payment_date) { errors.push(`Ligne ${i + 2}: montant ou date manquant`); return; }
+      toInsert.push({
+        type: validExpenseTypes.includes(row.type) ? row.type : 'other',
+        category: row.category || null,
+        description: row.description || null,
+        amount: csvToNumber(row.amount),
+        payment_date: row.payment_date,
+      });
+    });
+    if (toInsert.length > 0) {
+      const { error } = await supabase.from('expenses').insert(toInsert);
+      if (error) errors.push(error.message); else inserted = toInsert.length;
+    }
+    await load();
+    return { inserted, updated: 0, errors };
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-2">
@@ -1768,9 +2449,12 @@ function ExpensesTab() {
           <h2 className="text-xl font-bold text-gray-900 dark:text-white">{tr('expenses2', lang)}</h2>
           <p className="text-sm text-gray-500">{tr('totalExpenses', lang)}: <span className="font-bold text-red-500">{formatPrice(totalExpenses)}</span></p>
         </div>
-        <button onClick={() => setShowForm(!showForm)} className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-pink-500 hover:bg-pink-600 text-white text-sm font-semibold">
-          <Plus className="w-4 h-4" /> {tr('addExpense', lang)}
-        </button>
+        <div className="flex gap-2">
+          <ImportExportButtons data={expenses} columns={expenseCsvColumns} filename="depenses" onImportRows={handleImportExpenses} />
+          <button onClick={() => setShowForm(!showForm)} className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-pink-500 hover:bg-pink-600 text-white text-sm font-semibold">
+            <Plus className="w-4 h-4" /> {tr('addExpense', lang)}
+          </button>
+        </div>
       </div>
 
       {showForm && (

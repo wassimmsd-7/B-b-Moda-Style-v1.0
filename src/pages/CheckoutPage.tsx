@@ -123,13 +123,15 @@ export function CheckoutPage({ navigate }: CheckoutPageProps) {
         unit_price: item.price,
         total_price: item.price * item.quantity,
       }));
-      await supabase.from('order_items').insert(items);
+      const { error: itemsError } = await supabase.from('order_items').insert(items);
+      if (itemsError) throw itemsError;
 
       // Decrement stock
       for (const item of cart) {
         const { data: prod } = await supabase.from('products').select('stock').eq('id', item.product_id).maybeSingle();
         if (prod) {
-          await supabase.from('products').update({ stock: Math.max(0, prod.stock - item.quantity) }).eq('id', item.product_id);
+          const { error: stockError } = await supabase.from('products').update({ stock: Math.max(0, prod.stock - item.quantity) }).eq('id', item.product_id);
+          if (stockError) console.error('Stock sync error for product', item.product_id, stockError.message);
         }
       }
 

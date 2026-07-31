@@ -238,6 +238,7 @@ export const t: Translations = {
   seasonalProducts: { fr: 'Produits saisonniers', ar: 'منتجات موسمية', en: 'Seasonal products', dz: 'Produits mawasmiya' },
   suggestedQty: { fr: 'Qté suggérée', ar: 'كمية مقترحة', en: 'Suggested qty', dz: 'Kemiya mo9tara7a' },
   createPO: { fr: 'Créer bon de commande', ar: 'إنشاء أمر شراء', en: 'Create purchase order', dz: 'Cree bon de commande' },
+  deliveryZonesTab: { fr: 'Zones de livraison', ar: 'مناطق التوصيل', en: 'Delivery zones', dz: 'Zones ta3 livraison' },
 
   // Import
   importData: { fr: 'Importer', ar: 'استيراد', en: 'Import', dz: 'Importi' },

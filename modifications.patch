@@ -1,0 +1,687 @@
+diff --git a/src/components/ImportExportButtons.tsx b/src/components/ImportExportButtons.tsx
+new file mode 100644
+index 0000000..7c848d2
+--- /dev/null
++++ b/src/components/ImportExportButtons.tsx
+@@ -0,0 +1,103 @@
++import { useRef, useState } from 'react';
++import { Download, Upload, Loader2 } from 'lucide-react';
++import { toCsv, downloadCsv, parseCsv, csvRowsToObjects, readFileAsText } from '@/lib/csv';
++
++export interface CsvColumn {
++  /** Clé du champ dans l'objet JS (et libellé attendu en en-tête de colonne à l'import) */
++  key: string;
++  /** Libellé affiché en en-tête de colonne CSV */
++  header: string;
++}
++
++interface ImportExportButtonsProps<T extends Record<string, any>> {
++  /** Données actuellement affichées (filtrées) à exporter */
++  data: T[];
++  /** Colonnes exportées / attendues à l'import (le header doit correspondre entre export et import) */
++  columns: CsvColumn[];
++  /** Nom de fichier sans extension, ex: "produits" */
++  filename: string;
++  /**
++   * Reçoit les lignes CSV importées sous forme d'objets { [header]: string brut }.
++   * Doit convertir les types (nombres, booléens, tableaux) et écrire en base (upsert).
++   * Doit lever une erreur (throw) en cas de ligne invalide pour que l'utilisateur soit averti.
++   */
++  onImportRows: (rows: Record<string, string>[]) => Promise<{ inserted: number; updated: number; errors: string[] }>;
++}
++
++/**
++ * Barre de boutons "Exporter CSV" / "Importer CSV" à placer en haut de chaque page
++ * de gestion (produits, clients, fournisseurs, dépenses...). Permet de préparer les
++ * données en masse dans Excel/Google Sheets puis de les injecter d'un coup, au lieu
++ * de saisir chaque fiche une par une dans l'interface.
++ */
++export function ImportExportButtons<T extends Record<string, any>>({
++  data, columns, filename, onImportRows,
++}: ImportExportButtonsProps<T>) {
++  const fileInputRef = useRef<HTMLInputElement>(null);
++  const [importing, setImporting] = useState(false);
++  const [result, setResult] = useState<string | null>(null);
++
++  const handleExport = () => {
++    const csv = toCsv(data, columns);
++    const stamp = new Date().toISOString().slice(0, 10);
++    downloadCsv(`${filename}_${stamp}.csv`, csv);
++  };
++
++  const handleImportClick = () => fileInputRef.current?.click();
++
++  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
++    const file = e.target.files?.[0];
++    if (!file) return;
++    setImporting(true);
++    setResult(null);
++    try {
++      const text = await readFileAsText(file);
++      const rawRows = parseCsv(text);
++      if (rawRows.length < 2) {
++        setResult('Fichier vide ou sans données (uniquement l\'en-tête détecté).');
++        return;
++      }
++      const headerToKey = Object.fromEntries(columns.map((c) => [c.header, c.header]));
++      const objects = csvRowsToObjects(rawRows, headerToKey);
++      const { inserted, updated, errors } = await onImportRows(objects);
++      let msg = `Import terminé : ${inserted} créé(s), ${updated} mis à jour.`;
++      if (errors.length > 0) msg += ` ${errors.length} ligne(s) en erreur : ${errors.slice(0, 3).join(' | ')}${errors.length > 3 ? '…' : ''}`;
++      setResult(msg);
++    } catch (err) {
++      setResult('Erreur pendant l\'import : ' + (err instanceof Error ? err.message : 'inconnue'));
++    } finally {
++      setImporting(false);
++      if (fileInputRef.current) fileInputRef.current.value = '';
++    }
++  };
++
++  return (
++    <div className="flex items-center gap-2">
++      <button
++        type="button"
++        onClick={handleExport}
++        title="Exporter les lignes affichées en fichier CSV (Excel)"
++        className="flex items-center gap-1.5 px-3 py-2.5 rounded-xl bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300 text-sm font-medium hover:border-pink-300 dark:hover:border-pink-700"
++      >
++        <Download className="w-4 h-4" /> Exporter
++      </button>
++      <button
++        type="button"
++        onClick={handleImportClick}
++        disabled={importing}
++        title="Importer plusieurs lignes depuis un fichier CSV"
++        className="flex items-center gap-1.5 px-3 py-2.5 rounded-xl bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300 text-sm font-medium hover:border-pink-300 dark:hover:border-pink-700 disabled:opacity-50"
++      >
++        {importing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
++        Importer
++      </button>
++      <input ref={fileInputRef} type="file" accept=".csv" className="hidden" onChange={handleFileChange} />
++      {result && (
++        <div className="fixed bottom-4 right-4 z-50 max-w-sm bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl shadow-lg p-3 text-xs text-gray-700 dark:text-gray-200">
++          {result}
++          <button onClick={() => setResult(null)} className="block mt-1 text-pink-500 font-medium">Fermer</button>
++        </div>
++      )}
++    </div>
++  );
++}
+diff --git a/src/lib/csv.ts b/src/lib/csv.ts
+new file mode 100644
+index 0000000..241e48d
+--- /dev/null
++++ b/src/lib/csv.ts
+@@ -0,0 +1,116 @@
++// Utilitaires CSV génériques pour l'export/import de données dans l'admin.
++// Format standard RFC4180 (compatible Excel/LibreOffice/Google Sheets).
++
++/** Transforme une valeur en cellule CSV sûre (échappe guillemets, virgules, retours ligne). */
++function toCsvCell(value: unknown): string {
++  if (value === null || value === undefined) return '';
++  const str = Array.isArray(value) ? value.join('|') : String(value);
++  if (/[",\n;]/.test(str)) {
++    return `"${str.replace(/"/g, '""')}"`;
++  }
++  return str;
++}
++
++/** Génère un texte CSV à partir de lignes d'objets et d'une liste de colonnes { key, header }. */
++export function toCsv<T extends Record<string, any>>(
++  rows: T[],
++  columns: { key: string; header: string }[],
++): string {
++  const headerLine = columns.map((c) => toCsvCell(c.header)).join(',');
++  const lines = rows.map((row) => columns.map((c) => toCsvCell(row[c.key])).join(','));
++  return [headerLine, ...lines].join('\r\n');
++}
++
++/** Déclenche le téléchargement d'un fichier CSV dans le navigateur. */
++export function downloadCsv(filename: string, csvText: string) {
++  // \uFEFF = BOM pour qu'Excel ouvre correctement les caractères arabes/accentués
++  const blob = new Blob(['\uFEFF' + csvText], { type: 'text/csv;charset=utf-8;' });
++  const url = URL.createObjectURL(blob);
++  const a = document.createElement('a');
++  a.href = url;
++  a.download = filename.endsWith('.csv') ? filename : `${filename}.csv`;
++  document.body.appendChild(a);
++  a.click();
++  document.body.removeChild(a);
++  URL.revokeObjectURL(url);
++}
++
++/** Parse un texte CSV (RFC4180 : gère guillemets, virgules et retours ligne dans les champs). */
++export function parseCsv(text: string): string[][] {
++  const rows: string[][] = [];
++  let row: string[] = [];
++  let field = '';
++  let inQuotes = false;
++  // Normalise les fins de ligne et retire un BOM éventuel
++  const src = text.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
++
++  for (let i = 0; i < src.length; i++) {
++    const char = src[i];
++    if (inQuotes) {
++      if (char === '"') {
++        if (src[i + 1] === '"') { field += '"'; i++; }
++        else inQuotes = false;
++      } else {
++        field += char;
++      }
++    } else if (char === '"') {
++      inQuotes = true;
++    } else if (char === ',' || char === ';') {
++      row.push(field);
++      field = '';
++    } else if (char === '\n') {
++      row.push(field);
++      rows.push(row);
++      row = [];
++      field = '';
++    } else {
++      field += char;
++    }
++  }
++  if (field.length > 0 || row.length > 0) {
++    row.push(field);
++    rows.push(row);
++  }
++  return rows.filter((r) => r.some((cell) => cell.trim() !== ''));
++}
++
++/** Convertit les lignes CSV brutes (avec en-tête) en objets, en s'appuyant sur le mapping header -> key fourni. */
++export function csvRowsToObjects(
++  csvRows: string[][],
++  headerToKey: Record<string, string>,
++): Record<string, string>[] {
++  if (csvRows.length === 0) return [];
++  const [headerRow, ...dataRows] = csvRows;
++  const keys = headerRow.map((h) => headerToKey[h.trim()] ?? null);
++  return dataRows.map((r) => {
++    const obj: Record<string, string> = {};
++    keys.forEach((key, i) => {
++      if (key) obj[key] = (r[i] ?? '').trim();
++    });
++    return obj;
++  });
++}
++
++/** Lit un fichier <input type="file"> comme texte (Promise). */
++export function readFileAsText(file: File): Promise<string> {
++  return new Promise((resolve, reject) => {
++    const reader = new FileReader();
++    reader.onload = () => resolve(String(reader.result || ''));
++    reader.onerror = reject;
++    reader.readAsText(file, 'utf-8');
++  });
++}
++
++// Helpers de conversion de types pour l'import
++export const csvToNumber = (v: string, fallback = 0): number => {
++  const n = Number(String(v).replace(',', '.').trim());
++  return Number.isFinite(n) ? n : fallback;
++};
++export const csvToBool = (v: string, fallback = false): boolean => {
++  const s = v.trim().toLowerCase();
++  if (['true', '1', 'oui', 'yes', 'vrai'].includes(s)) return true;
++  if (['false', '0', 'non', 'no', 'faux'].includes(s)) return false;
++  return fallback;
++};
++export const csvToArray = (v: string): string[] =>
++  v ? v.split('|').map((s) => s.trim()).filter(Boolean) : [];
+diff --git a/src/pages/AdminPage.tsx b/src/pages/AdminPage.tsx
+index aec3fe5..a9d6548 100644
+--- a/src/pages/AdminPage.tsx
++++ b/src/pages/AdminPage.tsx
+@@ -2,11 +2,13 @@ import { useState, useEffect, useCallback } from 'react';
+ import { useApp } from '@/context/AppContext';
+ import { tr, formatPrice, formatDate, getProductName, getCategoryName, getStockStatus } from '@/lib/utils';
+ import { supabase } from '@/lib/supabase';
++import { ImportExportButtons } from '@/components/ImportExportButtons';
++import { csvToNumber, csvToBool, csvToArray } from '@/lib/csv';
+ import {
+   LayoutDashboard, Package, ShoppingCart, Users, Truck, Tag, BarChart3,
+   Settings, Menu, X, Plus, Edit2, Trash2, Search, AlertTriangle,
+   TrendingUp, DollarSign, ShoppingBag, ArrowDownRight,
+-  ClipboardList, Wallet, Receipt,
++  ClipboardList, Wallet, Receipt, ListChecks, Check,
+ } from 'lucide-react';
+ import type { Product, Category, Order, OrderItem, Client, Supplier, Promotion, PurchaseOrder, PurchaseOrderItem, Expense } from '@/lib/types';
+ 
+@@ -410,6 +412,66 @@ function ProductsTab() {
+     load();
+   };
+ 
++  const productCsvColumns = [
++    { key: 'sku', header: 'sku' },
++    { key: 'name_fr', header: 'name_fr' },
++    { key: 'name_ar', header: 'name_ar' },
++    { key: 'category', header: 'category' },
++    { key: 'purchase_price', header: 'purchase_price' },
++    { key: 'selling_price', header: 'selling_price' },
++    { key: 'promo_price', header: 'promo_price' },
++    { key: 'stock', header: 'stock' },
++    { key: 'stock_min', header: 'stock_min' },
++    { key: 'gender', header: 'gender' },
++    { key: 'season', header: 'season' },
++    { key: 'sizes', header: 'sizes' },
++    { key: 'colors', header: 'colors' },
++    { key: 'is_active', header: 'is_active' },
++    { key: 'is_featured', header: 'is_featured' },
++  ];
++
++  const productExportRows = filtered.map((p) => ({
++    ...p,
++    category: categories.find((c) => c.id === p.category_id)?.name_fr || '',
++  }));
++
++  const handleImportProducts = async (rows: Record<string, string>[]) => {
++    let inserted = 0, updated = 0;
++    const errors: string[] = [];
++    for (const [i, row] of rows.entries()) {
++      if (!row.name_fr) { errors.push(`Ligne ${i + 2}: name_fr manquant`); continue; }
++      const category = categories.find((c) => c.name_fr.toLowerCase() === (row.category || '').toLowerCase());
++      const payload = {
++        sku: row.sku || null,
++        name_fr: row.name_fr,
++        name_ar: row.name_ar || null,
++        category_id: category?.id || null,
++        purchase_price: csvToNumber(row.purchase_price),
++        selling_price: csvToNumber(row.selling_price),
++        promo_price: row.promo_price ? csvToNumber(row.promo_price) : null,
++        stock: csvToNumber(row.stock),
++        stock_min: csvToNumber(row.stock_min, 5),
++        gender: (['boy', 'girl', 'unisex'].includes(row.gender) ? row.gender : 'unisex') as Product['gender'],
++        season: (['spring', 'summer', 'autumn', 'winter', 'all'].includes(row.season) ? row.season : 'all') as Product['season'],
++        sizes: csvToArray(row.sizes),
++        colors: csvToArray(row.colors),
++        is_active: csvToBool(row.is_active, true),
++        is_featured: csvToBool(row.is_featured, false),
++      };
++      // Upsert par SKU si fourni et existant, sinon création d'une nouvelle fiche produit.
++      const existing = row.sku ? products.find((p) => p.sku === row.sku) : undefined;
++      if (existing) {
++        const { error } = await supabase.from('products').update(payload).eq('id', existing.id);
++        if (error) errors.push(`Ligne ${i + 2} (${row.sku}): ${error.message}`); else updated++;
++      } else {
++        const { error } = await supabase.from('products').insert(payload);
++        if (error) errors.push(`Ligne ${i + 2} (${row.name_fr}): ${error.message}`); else inserted++;
++      }
++    }
++    await load();
++    return { inserted, updated, errors };
++  };
++
+   return (
+     <div className="space-y-4">
+       <div className="flex flex-col sm:flex-row gap-3">
+@@ -423,6 +485,12 @@ function ProductsTab() {
+             className="w-full pl-9 pr-4 py-2.5 rounded-xl bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-pink-500"
+           />
+         </div>
++        <ImportExportButtons
++          data={productExportRows}
++          columns={productCsvColumns}
++          filename="produits"
++          onImportRows={handleImportProducts}
++        />
+         <button
+           onClick={() => { setEditing(null); setShowForm(true); }}
+           className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-pink-500 hover:bg-pink-600 text-white text-sm font-semibold transition-colors"
+@@ -1005,23 +1073,67 @@ function ClientsTab() {
+   const [search, setSearch] = useState('');
+   const [loading, setLoading] = useState(true);
+ 
+-  useEffect(() => {
+-    supabase.from('clients').select('*').order('created_at', { ascending: false }).then(({ data }) => {
+-      setClients(data as Client[] || []);
+-      setLoading(false);
+-    });
++  const load = useCallback(async () => {
++    const { data } = await supabase.from('clients').select('*').order('created_at', { ascending: false });
++    setClients(data as Client[] || []);
++    setLoading(false);
+   }, []);
+ 
++  useEffect(() => { load(); }, [load]);
++
+   const filtered = clients.filter((c) =>
+     c.name.toLowerCase().includes(search.toLowerCase()) ||
+     c.phone?.includes(search),
+   );
+ 
++  const clientCsvColumns = [
++    { key: 'name', header: 'name' },
++    { key: 'phone', header: 'phone' },
++    { key: 'phone2', header: 'phone2' },
++    { key: 'email', header: 'email' },
++    { key: 'wilaya', header: 'wilaya' },
++    { key: 'commune', header: 'commune' },
++    { key: 'address', header: 'address' },
++    { key: 'notes', header: 'notes' },
++  ];
++
++  const handleImportClients = async (rows: Record<string, string>[]) => {
++    let inserted = 0, updated = 0;
++    const errors: string[] = [];
++    for (const [i, row] of rows.entries()) {
++      if (!row.name) { errors.push(`Ligne ${i + 2}: nom manquant`); continue; }
++      const payload = {
++        name: row.name,
++        phone: row.phone || null,
++        phone2: row.phone2 || null,
++        email: row.email || null,
++        wilaya: row.wilaya || null,
++        commune: row.commune || null,
++        address: row.address || null,
++        notes: row.notes || null,
++      };
++      // Upsert par numéro de téléphone (identifiant naturel côté boutique)
++      const existing = row.phone ? clients.find((c) => c.phone === row.phone) : undefined;
++      if (existing) {
++        const { error } = await supabase.from('clients').update(payload).eq('id', existing.id);
++        if (error) errors.push(`Ligne ${i + 2} (${row.phone}): ${error.message}`); else updated++;
++      } else {
++        const { error } = await supabase.from('clients').insert(payload);
++        if (error) errors.push(`Ligne ${i + 2} (${row.name}): ${error.message}`); else inserted++;
++      }
++    }
++    await load();
++    return { inserted, updated, errors };
++  };
++
+   return (
+     <div className="space-y-4">
+-      <div className="relative">
+-        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+-        <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder={tr('search', lang)} className="w-full pl-9 pr-4 py-2.5 rounded-xl bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-pink-500" />
++      <div className="flex flex-col sm:flex-row gap-3">
++        <div className="relative flex-1">
++          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
++          <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder={tr('search', lang)} className="w-full pl-9 pr-4 py-2.5 rounded-xl bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-pink-500" />
++        </div>
++        <ImportExportButtons data={filtered} columns={clientCsvColumns} filename="clients" onImportRows={handleImportClients} />
+       </div>
+ 
+       {loading ? (
+@@ -1080,9 +1192,50 @@ function SuppliersTab() {
+     load();
+   };
+ 
++  const supplierCsvColumns = [
++    { key: 'name', header: 'name' },
++    { key: 'contact_name', header: 'contact_name' },
++    { key: 'phone', header: 'phone' },
++    { key: 'phone2', header: 'phone2' },
++    { key: 'email', header: 'email' },
++    { key: 'city', header: 'city' },
++    { key: 'address', header: 'address' },
++    { key: 'notes', header: 'notes' },
++  ];
++
++  const handleImportSuppliers = async (rows: Record<string, string>[]) => {
++    let inserted = 0, updated = 0;
++    const errors: string[] = [];
++    for (const [i, row] of rows.entries()) {
++      if (!row.name) { errors.push(`Ligne ${i + 2}: nom manquant`); continue; }
++      const payload = {
++        name: row.name,
++        contact_name: row.contact_name || null,
++        phone: row.phone || null,
++        phone2: row.phone2 || null,
++        email: row.email || null,
++        city: row.city || null,
++        address: row.address || null,
++        notes: row.notes || null,
++      };
++      // Upsert par nom du fournisseur (identifiant naturel)
++      const existing = suppliers.find((s) => s.name.toLowerCase() === row.name.toLowerCase());
++      if (existing) {
++        const { error } = await supabase.from('suppliers').update(payload).eq('id', existing.id);
++        if (error) errors.push(`Ligne ${i + 2} (${row.name}): ${error.message}`); else updated++;
++      } else {
++        const { error } = await supabase.from('suppliers').insert(payload);
++        if (error) errors.push(`Ligne ${i + 2} (${row.name}): ${error.message}`); else inserted++;
++      }
++    }
++    await load();
++    return { inserted, updated, errors };
++  };
++
+   return (
+     <div className="space-y-4">
+-      <div className="flex justify-end">
++      <div className="flex justify-end gap-2">
++        <ImportExportButtons data={suppliers} columns={supplierCsvColumns} filename="fournisseurs" onImportRows={handleImportSuppliers} />
+         <button onClick={() => { setEditing(null); setShowForm(true); }} className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-pink-500 hover:bg-pink-600 text-white text-sm font-semibold">
+           <Plus className="w-4 h-4" /> {tr('add', lang)}
+         </button>
+@@ -1458,6 +1611,7 @@ function PurchaseOrderForm({ suppliers, products, initialSupplierId, initialItem
+   const [supplierId, setSupplierId] = useState(initialSupplierId || '');
+   const [items, setItems] = useState<{ productId: string; qty: number; price: number }[]>(initialItems && initialItems.length > 0 ? initialItems : []);
+   const [notes, setNotes] = useState('');
++  const [showMultiPicker, setShowMultiPicker] = useState(false);
+ 
+   const addItem = () => setItems([...items, { productId: '', qty: 1, price: 0 }]);
+   const removeItem = (i: number) => setItems(items.filter((_, idx) => idx !== i));
+@@ -1472,6 +1626,22 @@ function PurchaseOrderForm({ suppliers, products, initialSupplierId, initialItem
+     }));
+   };
+ 
++  // Ajoute d'un coup plusieurs produits choisis dans le sélecteur multiple,
++  // en évitant les doublons avec les lignes déjà présentes et en ignorant
++  // les lignes vides existantes.
++  const addSelectedProducts = (productIds: string[]) => {
++    const existingIds = new Set(items.map((i) => i.productId).filter(Boolean));
++    const newRows = productIds
++      .filter((id) => !existingIds.has(id))
++      .map((id) => {
++        const p = products.find((pr) => pr.id === id);
++        return { productId: id, qty: 1, price: p?.purchase_price || 0 };
++      });
++    const cleanedItems = items.filter((i) => i.productId); // retire les lignes vides laissées par "+ Ajouter"
++    setItems([...cleanedItems, ...newRows]);
++    setShowMultiPicker(false);
++  };
++
+   const total = items.reduce((s, i) => s + i.qty * i.price, 0);
+ 
+   const handleSave = async () => {
+@@ -1525,7 +1695,12 @@ function PurchaseOrderForm({ suppliers, products, initialSupplierId, initialItem
+           <div>
+             <div className="flex items-center justify-between mb-2">
+               <h3 className="font-semibold text-sm text-gray-900 dark:text-white">Articles</h3>
+-              <button onClick={addItem} className="text-sm text-pink-500 font-medium">+ Ajouter</button>
++              <div className="flex items-center gap-3">
++                <button onClick={() => setShowMultiPicker(true)} className="flex items-center gap-1.5 text-sm text-pink-500 font-medium">
++                  <ListChecks className="w-4 h-4" /> Sélectionner plusieurs produits
++                </button>
++                <button onClick={addItem} className="text-sm text-pink-500 font-medium">+ Ajouter</button>
++              </div>
+             </div>
+             <div className="space-y-2">
+               {items.map((item, i) => (
+@@ -1539,9 +1714,21 @@ function PurchaseOrderForm({ suppliers, products, initialSupplierId, initialItem
+                   <button onClick={() => removeItem(i)} className="p-1.5 text-gray-400 hover:text-red-500"><Trash2 className="w-4 h-4" /></button>
+                 </div>
+               ))}
++              {items.length === 0 && (
++                <p className="text-xs text-gray-400 py-2">Aucun article. Utilisez "Sélectionner plusieurs produits" pour en ajouter plusieurs d'un coup, ou "+ Ajouter" pour une ligne à la fois.</p>
++              )}
+             </div>
+           </div>
+ 
++          {showMultiPicker && (
++            <ProductMultiSelectModal
++              products={products}
++              alreadySelectedIds={items.map((i) => i.productId).filter(Boolean)}
++              onClose={() => setShowMultiPicker(false)}
++              onConfirm={addSelectedProducts}
++            />
++          )}
++
+           <div className="flex justify-between font-bold text-gray-900 dark:text-white pt-3 border-t border-gray-100 dark:border-gray-700">
+             <span>Total</span>
+             <span>{formatPrice(total)}</span>
+@@ -1558,6 +1745,106 @@ function PurchaseOrderForm({ suppliers, products, initialSupplierId, initialItem
+   );
+ }
+ 
++// ───────────── SÉLECTEUR MULTIPLE DE PRODUITS ─────────────
++// Utilisé dans le bon de commande fournisseur pour ajouter plusieurs
++// produits en une seule fois (au lieu de les ajouter un par un).
++function ProductMultiSelectModal({ products, alreadySelectedIds, onClose, onConfirm }: {
++  products: Product[];
++  alreadySelectedIds: string[];
++  onClose: () => void;
++  onConfirm: (productIds: string[]) => void;
++}) {
++  const [search, setSearch] = useState('');
++  const [checked, setChecked] = useState<Set<string>>(new Set());
++
++  const filtered = products.filter((p) =>
++    p.name_fr.toLowerCase().includes(search.toLowerCase()) ||
++    p.sku?.toLowerCase().includes(search.toLowerCase()),
++  );
++
++  const toggle = (id: string) => {
++    setChecked((prev) => {
++      const next = new Set(prev);
++      if (next.has(id)) next.delete(id); else next.add(id);
++      return next;
++    });
++  };
++
++  const toggleAllFiltered = () => {
++    const allFilteredChecked = filtered.every((p) => checked.has(p.id));
++    setChecked((prev) => {
++      const next = new Set(prev);
++      filtered.forEach((p) => { if (allFilteredChecked) next.delete(p.id); else next.add(p.id); });
++      return next;
++    });
++  };
++
++  return (
++    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/50">
++      <div className="bg-white dark:bg-gray-800 rounded-2xl w-full max-w-lg max-h-[85vh] flex flex-col">
++        <div className="px-5 py-4 border-b border-gray-100 dark:border-gray-700 flex items-center justify-between shrink-0">
++          <h2 className="font-bold text-gray-900 dark:text-white">Sélectionner des produits</h2>
++          <button onClick={onClose} className="p-1 text-gray-400"><X className="w-5 h-5" /></button>
++        </div>
++        <div className="p-4 border-b border-gray-100 dark:border-gray-700 shrink-0 space-y-2">
++          <div className="relative">
++            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
++            <input
++              autoFocus
++              value={search}
++              onChange={(e) => setSearch(e.target.value)}
++              placeholder="Rechercher un produit ou un SKU..."
++              className="w-full pl-9 pr-4 py-2.5 rounded-xl bg-gray-50 dark:bg-gray-900 border border-gray-100 dark:border-gray-700 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-pink-500"
++            />
++          </div>
++          <div className="flex items-center justify-between text-xs text-gray-500">
++            <button onClick={toggleAllFiltered} className="text-pink-500 font-medium">
++              {filtered.every((p) => checked.has(p.id)) && filtered.length > 0 ? 'Tout désélectionner' : 'Tout sélectionner (résultats affichés)'}
++            </button>
++            <span>{checked.size} sélectionné(s)</span>
++          </div>
++        </div>
++        <div className="flex-1 overflow-y-auto p-2">
++          {filtered.length === 0 ? (
++            <div className="text-center text-gray-400 py-8 text-sm">Aucun produit trouvé.</div>
++          ) : (
++            filtered.map((p) => {
++              const isChecked = checked.has(p.id);
++              const isAlreadyInPO = alreadySelectedIds.includes(p.id);
++              return (
++                <label
++                  key={p.id}
++                  className={`flex items-center gap-3 px-3 py-2.5 rounded-xl cursor-pointer ${isChecked ? 'bg-pink-50 dark:bg-pink-900/20' : 'hover:bg-gray-50 dark:hover:bg-gray-900'}`}
++                >
++                  <input type="checkbox" checked={isChecked} onChange={() => toggle(p.id)} className="w-4 h-4 accent-pink-500" />
++                  <div className="w-9 h-9 rounded-lg bg-gray-100 dark:bg-gray-700 overflow-hidden shrink-0">
++                    {p.images?.[0] && <img src={p.images[0]} alt="" className="w-full h-full object-cover" />}
++                  </div>
++                  <div className="flex-1 min-w-0">
++                    <div className="text-sm font-medium text-gray-900 dark:text-white truncate">{p.name_fr}</div>
++                    <div className="text-xs text-gray-400">{p.sku || '—'} · Stock {p.stock} · {formatPrice(p.purchase_price)}</div>
++                  </div>
++                  {isAlreadyInPO && <span className="flex items-center gap-1 text-[10px] text-green-600 dark:text-green-400 shrink-0"><Check className="w-3 h-3" /> déjà ajouté</span>}
++                </label>
++              );
++            })
++          )}
++        </div>
++        <div className="px-5 py-4 border-t border-gray-100 dark:border-gray-700 flex gap-3 justify-end shrink-0">
++          <button onClick={onClose} className="px-4 py-2.5 rounded-xl text-sm font-medium text-gray-600 dark:text-gray-300 border border-gray-200 dark:border-gray-700">Annuler</button>
++          <button
++            onClick={() => onConfirm(Array.from(checked))}
++            disabled={checked.size === 0}
++            className="px-4 py-2.5 rounded-xl bg-pink-500 text-white text-sm font-semibold disabled:opacity-50"
++          >
++            Ajouter {checked.size > 0 ? `(${checked.size})` : ''}
++          </button>
++        </div>
++      </div>
++    </div>
++  );
++}
++
+ // ───────────── ANALYTICS TAB ─────────────
+ function AnalyticsTab() {
+   const { lang } = useApp();
+@@ -1761,6 +2048,38 @@ function ExpensesTab() {
+     supplies: Package, marketing: Tag, transport: Truck, tax: DollarSign, other: Receipt,
+   };
+ 
++  const expenseCsvColumns = [
++    { key: 'type', header: 'type' },
++    { key: 'category', header: 'category' },
++    { key: 'description', header: 'description' },
++    { key: 'amount', header: 'amount' },
++    { key: 'payment_date', header: 'payment_date' },
++  ];
++  const validExpenseTypes = ['personnel', 'salary', 'rent', 'utility', 'supplies', 'marketing', 'transport', 'tax', 'other'];
++
++  const handleImportExpenses = async (rows: Record<string, string>[]) => {
++    // Les dépenses n'ont pas de clé naturelle unique : chaque ligne importée crée une nouvelle dépense.
++    let inserted = 0;
++    const errors: string[] = [];
++    const toInsert: Record<string, any>[] = [];
++    rows.forEach((row, i) => {
++      if (!row.amount || !row.payment_date) { errors.push(`Ligne ${i + 2}: montant ou date manquant`); return; }
++      toInsert.push({
++        type: validExpenseTypes.includes(row.type) ? row.type : 'other',
++        category: row.category || null,
++        description: row.description || null,
++        amount: csvToNumber(row.amount),
++        payment_date: row.payment_date,
++      });
++    });
++    if (toInsert.length > 0) {
++      const { error } = await supabase.from('expenses').insert(toInsert);
++      if (error) errors.push(error.message); else inserted = toInsert.length;
++    }
++    await load();
++    return { inserted, updated: 0, errors };
++  };
++
+   return (
+     <div className="space-y-4">
+       <div className="flex items-center justify-between flex-wrap gap-2">
+@@ -1768,9 +2087,12 @@ function ExpensesTab() {
+           <h2 className="text-xl font-bold text-gray-900 dark:text-white">{tr('expenses2', lang)}</h2>
+           <p className="text-sm text-gray-500">{tr('totalExpenses', lang)}: <span className="font-bold text-red-500">{formatPrice(totalExpenses)}</span></p>
+         </div>
+-        <button onClick={() => setShowForm(!showForm)} className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-pink-500 hover:bg-pink-600 text-white text-sm font-semibold">
+-          <Plus className="w-4 h-4" /> {tr('addExpense', lang)}
+-        </button>
++        <div className="flex gap-2">
++          <ImportExportButtons data={expenses} columns={expenseCsvColumns} filename="depenses" onImportRows={handleImportExpenses} />
++          <button onClick={() => setShowForm(!showForm)} className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-pink-500 hover:bg-pink-600 text-white text-sm font-semibold">
++            <Plus className="w-4 h-4" /> {tr('addExpense', lang)}
++          </button>
++        </div>
+       </div>
+ 
+       {showForm && (

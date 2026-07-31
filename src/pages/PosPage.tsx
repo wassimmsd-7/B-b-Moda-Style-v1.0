@@ -140,26 +140,37 @@ export function PosPage({ navigate }: PosPageProps) {
     const paid = paymentMode === 'credit' ? 0 : Number(amountPaid || subtotal);
     const due = subtotal - paid;
 
-    const { data: sale } = await supabase.from('cash_sales').insert({
+    const { data: sale, error: saleError } = await supabase.from('cash_sales').insert({
       sale_number: saleNumber, cashier_name: staffRole, client_name: clientName || null,
       subtotal, total: subtotal, amount_paid: paid, amount_due: due,
       credit_deadline: creditDeadline || null, payment_method: paymentMethod,
       status: paymentMode === 'credit' ? 'credit' : due > 0 ? 'partial' : 'completed',
     }).select('*').single();
 
-    if (sale) {
-      await supabase.from('cash_sale_items').insert(cart.map((l) => ({
+    if (saleError || !sale) {
+      alert('Erreur lors de l\'enregistrement de la vente: ' + (saleError?.message || 'inconnue'));
+      return;
+    }
+
+    {
+      const { error: itemsError } = await supabase.from('cash_sale_items').insert(cart.map((l) => ({
         sale_id: sale.id, product_id: l.product_id, product_name: l.name, barcode: l.barcode,
         size: l.size, color: l.color, quantity: l.qty, unit_price: l.price,
         purchase_price: l.purchase_price, total_price: l.price * l.qty,
       })));
+      if (itemsError) {
+        alert('Erreur lors de l\'enregistrement des articles de la vente: ' + itemsError.message);
+        return;
+      }
 
       // Decrement stock + check alerts
+      const stockErrors: string[] = [];
       for (const l of cart) {
         const { data: prod } = await supabase.from('products').select('stock,stock_min,name_fr').eq('id', l.product_id).maybeSingle();
         if (prod) {
           const newStock = Math.max(0, prod.stock - l.qty);
-          await supabase.from('products').update({ stock: newStock }).eq('id', l.product_id);
+          const { error: stockError } = await supabase.from('products').update({ stock: newStock }).eq('id', l.product_id);
+          if (stockError) stockErrors.push(`${prod.name_fr}: ${stockError.message}`);
           if (newStock === 0) {
             await createNotification('out_of_stock', [
               { fr: `Rupture: ${prod.name_fr}`, ar: `نفاد: ${prod.name_fr}`, en: `Out: ${prod.name_fr}`, dz: `Sali: ${prod.name_fr}` },
@@ -172,6 +183,10 @@ export function PosPage({ navigate }: PosPageProps) {
             ], l.product_id, 'product');
           }
         }
+      }
+
+      if (stockErrors.length > 0) {
+        alert('La vente est enregistrée mais le stock n\'a pas pu être mis à jour pour:\n' + stockErrors.join('\n'));
       }
 
       await createNotification('new_sale', [
@@ -195,13 +210,22 @@ export function PosPage({ navigate }: PosPageProps) {
   const cancelSale = async (sale: CashSale) => {
     if (!confirm(`Annuler la vente ${sale.sale_number}? Le stock sera restauré.`)) return;
     // Restore stock
+    const errors: string[] = [];
     for (const item of saleItems) {
       const { data: prod } = await supabase.from('products').select('stock').eq('id', item.product_id).maybeSingle();
       if (prod) {
-        await supabase.from('products').update({ stock: prod.stock + item.quantity }).eq('id', item.product_id);
+        const { error } = await supabase.from('products').update({ stock: prod.stock + item.quantity }).eq('id', item.product_id);
+        if (error) errors.push(`Stock ${item.product_name}: ${error.message}`);
       }
     }
-    await supabase.from('cash_sales').update({ status: 'cancelled' }).eq('id', sale.id);
+    const { error: cancelError } = await supabase.from('cash_sales').update({ status: 'cancelled' }).eq('id', sale.id);
+    if (cancelError) {
+      alert('Erreur lors de l\'annulation de la vente: ' + cancelError.message);
+      return;
+    }
+    if (errors.length > 0) {
+      alert('La vente est annulée mais certains stocks n\'ont pas pu être restaurés:\n' + errors.join('\n'));
+    }
     setSelectedSale(null);
     setShowHistory(false);
     loadTodaySales(); loadProducts();
@@ -256,6 +280,7 @@ export function PosPage({ navigate }: PosPageProps) {
   const saveEditSale = async () => {
     if (!editingSale) return;
     setSavingEdit(true);
+    const errors: string[] = [];
     // Adjust stock for each affected product: delta = originalQty - newQty (positive => restore stock)
     for (const item of editItems) {
       const originalQty = item._originalQty || 0;
@@ -263,7 +288,8 @@ export function PosPage({ navigate }: PosPageProps) {
       if (delta !== 0 && item.product_id) {
         const { data: prod } = await supabase.from('products').select('stock').eq('id', item.product_id).maybeSingle();
         if (prod) {
-          await supabase.from('products').update({ stock: Math.max(0, prod.stock + delta) }).eq('id', item.product_id);
+          const { error } = await supabase.from('products').update({ stock: Math.max(0, prod.stock + delta) }).eq('id', item.product_id);
+          if (error) errors.push(`Stock ${item.product_name}: ${error.message}`);
         }
       }
     }
@@ -274,34 +300,46 @@ export function PosPage({ navigate }: PosPageProps) {
       if (!stillPresentIds.has(orig.id)) {
         if (orig.product_id) {
           const { data: prod } = await supabase.from('products').select('stock').eq('id', orig.product_id).maybeSingle();
-          if (prod) await supabase.from('products').update({ stock: prod.stock + orig.quantity }).eq('id', orig.product_id);
+          if (prod) {
+            const { error } = await supabase.from('products').update({ stock: prod.stock + orig.quantity }).eq('id', orig.product_id);
+            if (error) errors.push(`Stock ${orig.product_name}: ${error.message}`);
+          }
         }
-        await supabase.from('cash_sale_items').delete().eq('id', orig.id);
+        const { error } = await supabase.from('cash_sale_items').delete().eq('id', orig.id);
+        if (error) errors.push(`Suppression ${orig.product_name}: ${error.message}`);
       }
     }
     // Update or insert items
     for (const item of editItems) {
       if (item.id.startsWith('new-')) {
-        await supabase.from('cash_sale_items').insert({
+        const { error } = await supabase.from('cash_sale_items').insert({
           sale_id: editingSale.id, product_id: item.product_id, product_name: item.product_name,
           product_sku: item.product_sku, barcode: item.barcode, size: item.size, color: item.color,
           quantity: item.quantity, unit_price: item.unit_price, purchase_price: item.purchase_price,
           discount_amount: 0, total_price: item.unit_price * item.quantity,
         });
+        if (error) errors.push(`Ajout ${item.product_name}: ${error.message}`);
       } else {
-        await supabase.from('cash_sale_items').update({
+        const { error } = await supabase.from('cash_sale_items').update({
           quantity: item.quantity, total_price: item.unit_price * item.quantity,
         }).eq('id', item.id);
+        if (error) errors.push(`MAJ ${item.product_name}: ${error.message}`);
       }
     }
     const newTotal = editNewSubtotal;
     const newDue = Math.max(0, newTotal - editingSale.amount_paid);
     const newStatus = editingSale.status === 'credit' ? 'credit' : newDue > 0 ? 'partial' : 'completed';
-    await supabase.from('cash_sales').update({
+    const { error: saleUpdateError } = await supabase.from('cash_sales').update({
       subtotal: newTotal, total: newTotal, amount_due: newDue, status: newStatus,
     }).eq('id', editingSale.id);
+    if (saleUpdateError) errors.push(`Total de la vente: ${saleUpdateError.message}`);
 
     setSavingEdit(false);
+
+    if (errors.length > 0) {
+      alert('Certaines modifications n\'ont pas pu être enregistrées:\n' + errors.join('\n'));
+    }
+
     setEditingSale(null);
     loadTodaySales();
     loadProducts();
