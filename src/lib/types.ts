@@ -203,6 +203,18 @@ export interface PurchaseOrder {
   updated_at: string;
 }
 
+export interface PurchaseOrderItem {
+  id: string;
+  po_id: string;
+  product_id: string | null;
+  product_name: string;
+  quantity_ordered: number;
+  quantity_received: number;
+  unit_price: number;
+  total_price: number;
+  created_at: string;
+}
+
 export interface Promotion {
   id: string;
   name_fr: string;

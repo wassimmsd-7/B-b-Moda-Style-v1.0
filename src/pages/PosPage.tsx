@@ -6,7 +6,7 @@ import { createNotification } from '@/lib/notifications';
 import {
   Search, Plus, Minus, Trash2, ShoppingCart, Printer, X,
   CreditCard, Banknote, Clock, Check, ArrowLeft, Receipt,
-  History, RotateCcw, AlertCircle,
+  History, RotateCcw, AlertCircle, Edit2, Save,
 } from 'lucide-react';
 import type { Product, CashSale, CashSaleItem, Category } from '@/lib/types';
 
@@ -46,6 +46,10 @@ export function PosPage({ navigate }: PosPageProps) {
   const [showHistory, setShowHistory] = useState(false);
   const [selectedSale, setSelectedSale] = useState<CashSale | null>(null);
   const [saleItems, setSaleItems] = useState<CashSaleItem[]>([]);
+  const [editingSale, setEditingSale] = useState<CashSale | null>(null);
+  const [editItems, setEditItems] = useState<(CashSaleItem & { _originalQty?: number })[]>([]);
+  const [editProductSearch, setEditProductSearch] = useState('');
+  const [savingEdit, setSavingEdit] = useState(false);
 
   const loadProducts = useCallback(async () => {
     const [{ data: prods }, { data: cats }] = await Promise.all([
@@ -201,6 +205,106 @@ export function PosPage({ navigate }: PosPageProps) {
     setSelectedSale(null);
     setShowHistory(false);
     loadTodaySales(); loadProducts();
+  };
+
+  const openEditSale = async (sale: CashSale) => {
+    const { data } = await supabase.from('cash_sale_items').select('*').eq('sale_id', sale.id);
+    setEditingSale(sale);
+    setEditItems((data || []).map((i) => ({ ...i, _originalQty: i.quantity })));
+    setEditProductSearch('');
+    setShowHistory(false);
+  };
+
+  const editUpdateQty = (itemId: string, qty: number) => {
+    if (qty < 0) return;
+    setEditItems((prev) => prev.map((i) => i.id === itemId ? { ...i, quantity: qty, total_price: qty * i.unit_price } : i));
+  };
+
+  const editRemoveItem = (itemId: string) => {
+    setEditItems((prev) => prev.filter((i) => i.id !== itemId));
+  };
+
+  const editAddProduct = (product: Product) => {
+    const price = product.promo_price && product.promo_price < product.selling_price ? product.promo_price : product.selling_price;
+    setEditItems((prev) => {
+      const existing = prev.find((i) => i.product_id === product.id);
+      if (existing) {
+        return prev.map((i) => i.id === existing.id ? { ...i, quantity: i.quantity + 1, total_price: (i.quantity + 1) * i.unit_price } : i);
+      }
+      return [...prev, {
+        id: `new-${product.id}-${Date.now()}`,
+        sale_id: editingSale!.id,
+        product_id: product.id,
+        product_name: getProductName(product, lang),
+        product_sku: product.sku,
+        barcode: product.barcode,
+        size: product.sizes?.[0] || null,
+        color: product.colors?.[0] || null,
+        quantity: 1,
+        unit_price: price,
+        purchase_price: product.purchase_price,
+        discount_amount: 0,
+        total_price: price,
+        _originalQty: 0,
+      }];
+    });
+    setEditProductSearch('');
+  };
+
+  const editNewSubtotal = editItems.reduce((s, i) => s + i.unit_price * i.quantity, 0);
+
+  const saveEditSale = async () => {
+    if (!editingSale) return;
+    setSavingEdit(true);
+    // Adjust stock for each affected product: delta = originalQty - newQty (positive => restore stock)
+    for (const item of editItems) {
+      const originalQty = item._originalQty || 0;
+      const delta = originalQty - item.quantity;
+      if (delta !== 0 && item.product_id) {
+        const { data: prod } = await supabase.from('products').select('stock').eq('id', item.product_id).maybeSingle();
+        if (prod) {
+          await supabase.from('products').update({ stock: Math.max(0, prod.stock + delta) }).eq('id', item.product_id);
+        }
+      }
+    }
+    // Removed items (present originally but no longer in editItems)
+    const { data: originalItems } = await supabase.from('cash_sale_items').select('*').eq('sale_id', editingSale.id);
+    const stillPresentIds = new Set(editItems.filter((i) => !i.id.startsWith('new-')).map((i) => i.id));
+    for (const orig of originalItems || []) {
+      if (!stillPresentIds.has(orig.id)) {
+        if (orig.product_id) {
+          const { data: prod } = await supabase.from('products').select('stock').eq('id', orig.product_id).maybeSingle();
+          if (prod) await supabase.from('products').update({ stock: prod.stock + orig.quantity }).eq('id', orig.product_id);
+        }
+        await supabase.from('cash_sale_items').delete().eq('id', orig.id);
+      }
+    }
+    // Update or insert items
+    for (const item of editItems) {
+      if (item.id.startsWith('new-')) {
+        await supabase.from('cash_sale_items').insert({
+          sale_id: editingSale.id, product_id: item.product_id, product_name: item.product_name,
+          product_sku: item.product_sku, barcode: item.barcode, size: item.size, color: item.color,
+          quantity: item.quantity, unit_price: item.unit_price, purchase_price: item.purchase_price,
+          discount_amount: 0, total_price: item.unit_price * item.quantity,
+        });
+      } else {
+        await supabase.from('cash_sale_items').update({
+          quantity: item.quantity, total_price: item.unit_price * item.quantity,
+        }).eq('id', item.id);
+      }
+    }
+    const newTotal = editNewSubtotal;
+    const newDue = Math.max(0, newTotal - editingSale.amount_paid);
+    const newStatus = editingSale.status === 'credit' ? 'credit' : newDue > 0 ? 'partial' : 'completed';
+    await supabase.from('cash_sales').update({
+      subtotal: newTotal, total: newTotal, amount_due: newDue, status: newStatus,
+    }).eq('id', editingSale.id);
+
+    setSavingEdit(false);
+    setEditingSale(null);
+    loadTodaySales();
+    loadProducts();
   };
 
   const todayTotal = todaySales.filter(s => s.status !== 'cancelled').reduce((s, sale) => s + (sale.total || 0), 0);
@@ -455,12 +559,81 @@ export function PosPage({ navigate }: PosPageProps) {
                     </div>
                   </div>
                   {sale.status !== 'cancelled' && (
-                    <button onClick={() => viewSale(sale)} className="mt-2 w-full py-1.5 rounded-lg text-xs font-medium text-red-500 hover:bg-red-50 dark:hover:bg-red-900/30 flex items-center justify-center gap-1">
-                      <RotateCcw className="w-3 h-3" /> {tr('cancelSale', lang)}
-                    </button>
+                    <div className="mt-2 flex gap-2">
+                      <button onClick={() => openEditSale(sale)} className="flex-1 py-1.5 rounded-lg text-xs font-medium text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-900/30 flex items-center justify-center gap-1">
+                        <Edit2 className="w-3 h-3" /> Modifier
+                      </button>
+                      <button onClick={() => viewSale(sale)} className="flex-1 py-1.5 rounded-lg text-xs font-medium text-red-500 hover:bg-red-50 dark:hover:bg-red-900/30 flex items-center justify-center gap-1">
+                        <RotateCcw className="w-3 h-3" /> {tr('cancelSale', lang)}
+                      </button>
+                    </div>
                   )}
                 </div>
               ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Edit sale modal */}
+      {editingSale && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/50">
+          <div className="bg-white dark:bg-gray-800 rounded-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
+            <div className="sticky top-0 bg-white dark:bg-gray-800 px-5 py-4 border-b border-gray-100 dark:border-gray-700 flex items-center justify-between">
+              <h2 className="font-bold text-gray-900 dark:text-white flex items-center gap-2"><Edit2 className="w-4 h-4 text-blue-500" /> Modifier {editingSale.sale_number}</h2>
+              <button onClick={() => setEditingSale(null)} className="p-1 text-gray-400"><X className="w-5 h-5" /></button>
+            </div>
+            <div className="p-5 space-y-4">
+              <div className="space-y-2">
+                {editItems.map((item) => (
+                  <div key={item.id} className="flex items-center gap-2 bg-gray-50 dark:bg-gray-900 rounded-xl p-2.5">
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-medium text-gray-900 dark:text-white truncate">{item.product_name}</div>
+                      <div className="text-xs text-gray-400">{formatPrice(item.unit_price)} / unité</div>
+                    </div>
+                    <button onClick={() => editUpdateQty(item.id, item.quantity - 1)} className="w-7 h-7 rounded-lg bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 flex items-center justify-center text-gray-600 dark:text-gray-300"><Minus className="w-3.5 h-3.5" /></button>
+                    <span className="w-8 text-center text-sm font-semibold text-gray-900 dark:text-white">{item.quantity}</span>
+                    <button onClick={() => editUpdateQty(item.id, item.quantity + 1)} className="w-7 h-7 rounded-lg bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 flex items-center justify-center text-gray-600 dark:text-gray-300"><Plus className="w-3.5 h-3.5" /></button>
+                    <div className="w-20 text-right text-sm font-bold text-gray-900 dark:text-white">{formatPrice(item.unit_price * item.quantity)}</div>
+                    <button onClick={() => editRemoveItem(item.id)} className="w-7 h-7 flex items-center justify-center text-gray-400 hover:text-red-500"><Trash2 className="w-4 h-4" /></button>
+                  </div>
+                ))}
+                {editItems.length === 0 && <div className="text-center text-sm text-gray-400 py-4">Aucun article — la vente sera vidée</div>}
+              </div>
+
+              <div className="border-t border-gray-100 dark:border-gray-700 pt-3">
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                  <input
+                    value={editProductSearch}
+                    onChange={(e) => setEditProductSearch(e.target.value)}
+                    placeholder="Ajouter un article..."
+                    className="w-full pl-9 pr-3 py-2 rounded-lg bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 text-sm text-gray-900 dark:text-white"
+                  />
+                </div>
+                {editProductSearch && (
+                  <div className="mt-1 max-h-40 overflow-y-auto border border-gray-100 dark:border-gray-700 rounded-lg divide-y divide-gray-100 dark:divide-gray-700">
+                    {products.filter((p) => p.name_fr.toLowerCase().includes(editProductSearch.toLowerCase())).slice(0, 8).map((p) => (
+                      <button key={p.id} onClick={() => editAddProduct(p)} className="w-full text-left px-3 py-2 text-sm hover:bg-gray-50 dark:hover:bg-gray-900 flex justify-between text-gray-700 dark:text-gray-200">
+                        <span>{p.name_fr}</span>
+                        <span className="text-gray-400">{formatPrice(p.selling_price)}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="flex justify-between font-bold text-gray-900 dark:text-white pt-3 border-t border-gray-100 dark:border-gray-700">
+                <span>Nouveau total</span>
+                <span>{formatPrice(editNewSubtotal)}</span>
+              </div>
+
+              <div className="flex gap-3">
+                <button onClick={() => setEditingSale(null)} className="flex-1 py-2.5 rounded-xl text-sm font-medium text-gray-600 dark:text-gray-300 border border-gray-200 dark:border-gray-700">{tr('cancel', lang)}</button>
+                <button onClick={saveEditSale} disabled={savingEdit} className="flex-1 py-2.5 rounded-xl bg-blue-500 hover:bg-blue-600 text-white text-sm font-semibold disabled:opacity-50 flex items-center justify-center gap-1.5">
+                  <Save className="w-4 h-4" /> {savingEdit ? tr('loading', lang) : tr('save', lang)}
+                </button>
+              </div>
             </div>
           </div>
         </div>

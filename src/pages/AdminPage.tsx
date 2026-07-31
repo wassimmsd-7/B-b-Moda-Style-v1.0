@@ -8,7 +8,7 @@ import {
   TrendingUp, DollarSign, ShoppingBag, ArrowDownRight,
   ClipboardList, Wallet, Receipt,
 } from 'lucide-react';
-import type { Product, Category, Order, OrderItem, Client, Supplier, Promotion, PurchaseOrder, Expense } from '@/lib/types';
+import type { Product, Category, Order, OrderItem, Client, Supplier, Promotion, PurchaseOrder, PurchaseOrderItem, Expense } from '@/lib/types';
 
 interface AdminPageProps {
   navigate: (path: string) => void;
@@ -379,18 +379,21 @@ function ProductsTab() {
   const { lang } = useApp();
   const [products, setProducts] = useState<Product[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
+  const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [search, setSearch] = useState('');
   const [editing, setEditing] = useState<Product | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
-    const [{ data: prods }, { data: cats }] = await Promise.all([
+    const [{ data: prods }, { data: cats }, { data: sups }] = await Promise.all([
       supabase.from('products').select('*').order('created_at', { ascending: false }),
       supabase.from('categories').select('*').order('name_fr'),
+      supabase.from('suppliers').select('*').order('name'),
     ]);
     setProducts(prods || []);
     setCategories(cats || []);
+    setSuppliers(sups || []);
     setLoading(false);
   }, []);
 
@@ -438,6 +441,7 @@ function ProductsTab() {
                 <tr>
                   <th className="text-left px-4 py-3 font-medium">{tr('name', lang)}</th>
                   <th className="text-left px-4 py-3 font-medium">{tr('category', lang)}</th>
+                  <th className="text-left px-4 py-3 font-medium hidden md:table-cell">Fournisseur</th>
                   <th className="text-left px-4 py-3 font-medium">{tr('price', lang)}</th>
                   <th className="text-left px-4 py-3 font-medium">{tr('stock', lang)}</th>
                   <th className="text-left px-4 py-3 font-medium">{tr('status', lang)}</th>
@@ -462,6 +466,7 @@ function ProductsTab() {
                         </div>
                       </td>
                       <td className="px-4 py-3 text-gray-600 dark:text-gray-300">{cat ? getCategoryName(cat, lang) : '—'}</td>
+                      <td className="px-4 py-3 text-gray-600 dark:text-gray-300 hidden md:table-cell">{suppliers.find((s) => s.id === p.supplier_id)?.name || '—'}</td>
                       <td className="px-4 py-3 font-medium text-gray-900 dark:text-white">{formatPrice(p.selling_price)}</td>
                       <td className="px-4 py-3">
                         <span className={stockStatus === 'out' ? 'text-red-500' : stockStatus === 'low' ? 'text-orange-500' : 'text-gray-700 dark:text-gray-200'}>
@@ -498,6 +503,7 @@ function ProductsTab() {
         <ProductForm
           product={editing}
           categories={categories}
+          suppliers={suppliers}
           onClose={() => setShowForm(false)}
           onSaved={() => { setShowForm(false); load(); }}
         />
@@ -507,9 +513,10 @@ function ProductsTab() {
 }
 
 // ───────────── PRODUCT FORM ─────────────
-function ProductForm({ product, categories, onClose, onSaved }: {
+function ProductForm({ product, categories, suppliers, onClose, onSaved }: {
   product: Product | null;
   categories: Category[];
+  suppliers: Supplier[];
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -521,6 +528,7 @@ function ProductForm({ product, categories, onClose, onSaved }: {
     sku: product?.sku || '',
     barcode: product?.barcode || '',
     category_id: product?.category_id || '',
+    supplier_id: product?.supplier_id || '',
     purchase_price: product?.purchase_price || 0,
     selling_price: product?.selling_price || 0,
     promo_price: product?.promo_price || '',
@@ -538,6 +546,25 @@ function ProductForm({ product, categories, onClose, onSaved }: {
     is_active: product?.is_active ?? true,
   });
   const [saving, setSaving] = useState(false);
+  const [poHistory, setPoHistory] = useState<(PurchaseOrderItem & { po_number?: string; po_status?: string; po_date?: string })[]>([]);
+  const [loadingHistory, setLoadingHistory] = useState(false);
+
+  useEffect(() => {
+    if (!product) return;
+    setLoadingHistory(true);
+    (async () => {
+      const { data: items } = await supabase.from('purchase_order_items').select('*').eq('product_id', product.id).order('created_at', { ascending: false });
+      if (!items || items.length === 0) { setPoHistory([]); setLoadingHistory(false); return; }
+      const poIds = Array.from(new Set(items.map((i) => i.po_id)));
+      const { data: pos } = await supabase.from('purchase_orders').select('*').in('id', poIds);
+      const merged = items.map((i) => {
+        const po = pos?.find((p) => p.id === i.po_id);
+        return { ...i, po_number: po?.po_number, po_status: po?.status, po_date: po?.created_at };
+      });
+      setPoHistory(merged);
+      setLoadingHistory(false);
+    })();
+  }, [product]);
 
   const handleSave = async () => {
     setSaving(true);
@@ -548,6 +575,7 @@ function ProductForm({ product, categories, onClose, onSaved }: {
       sku: form.sku || null,
       barcode: form.barcode || null,
       category_id: form.category_id || null,
+      supplier_id: form.supplier_id || null,
       purchase_price: Number(form.purchase_price),
       selling_price: Number(form.selling_price),
       promo_price: form.promo_price ? Number(form.promo_price) : null,
@@ -608,6 +636,12 @@ function ProductForm({ product, categories, onClose, onSaved }: {
                 <option value="girl">{tr('girl', lang)}</option>
               </select>
             </Field>
+            <Field label="Fournisseur">
+              <select value={form.supplier_id} onChange={(e) => setForm({ ...form, supplier_id: e.target.value })} className="input">
+                <option value="">—</option>
+                {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+              </select>
+            </Field>
             <Field label={tr('purchaseCost', lang)}>
               <input type="number" value={form.purchase_price} onChange={(e) => setForm({ ...form, purchase_price: Number(e.target.value) })} className="input" />
             </Field>
@@ -661,6 +695,37 @@ function ProductForm({ product, categories, onClose, onSaved }: {
               {tr('active', lang)}
             </label>
           </div>
+
+          {product && (
+            <div className="border-t border-gray-100 dark:border-gray-700 pt-4">
+              <h3 className="font-semibold text-sm text-gray-900 dark:text-white mb-2">Historique des commandes fournisseur</h3>
+              {loadingHistory ? (
+                <div className="text-xs text-gray-400">{tr('loading', lang)}</div>
+              ) : poHistory.length === 0 ? (
+                <div className="text-xs text-gray-400">Aucune commande fournisseur pour ce produit.</div>
+              ) : (
+                <div className="space-y-1.5">
+                  {poHistory.map((item) => (
+                    <div key={item.id} className="flex items-center justify-between text-xs bg-gray-50 dark:bg-gray-900 rounded-lg px-3 py-2">
+                      <div>
+                        <span className="font-mono font-bold text-gray-900 dark:text-white">{item.po_number || '—'}</span>
+                        <span className="ml-2 text-gray-400">{item.po_date ? formatDate(item.po_date, lang) : ''}</span>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <span className="text-gray-500">{item.quantity_ordered} × {formatPrice(item.unit_price)}</span>
+                        <span className={`px-1.5 py-0.5 rounded-md font-medium ${
+                          item.po_status === 'received' ? 'bg-green-50 dark:bg-green-900/30 text-green-600 dark:text-green-400' :
+                          item.po_status === 'sent' ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400' :
+                          item.po_status === 'cancelled' ? 'bg-red-50 dark:bg-red-900/30 text-red-600 dark:text-red-400' :
+                          'bg-gray-100 dark:bg-gray-700 text-gray-500'
+                        }`}>{item.po_status}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
         <div className="sticky bottom-0 bg-white dark:bg-gray-800 px-5 py-4 border-t border-gray-100 dark:border-gray-700 flex gap-3 justify-end">
           <button onClick={onClose} className="px-4 py-2.5 rounded-xl text-sm font-medium text-gray-600 dark:text-gray-300 border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700">{tr('cancel', lang)}</button>
@@ -1232,6 +1297,8 @@ function PurchaseOrdersTab() {
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
+  const [selectedPO, setSelectedPO] = useState<PurchaseOrder | null>(null);
+  const [selectedItems, setSelectedItems] = useState<PurchaseOrderItem[]>([]);
 
   const load = useCallback(async () => {
     const [{ data: poData }, { data: supData }, { data: prodData }] = await Promise.all([
@@ -1247,6 +1314,31 @@ function PurchaseOrdersTab() {
 
   useEffect(() => { load(); }, [load]);
 
+  const openPO = async (po: PurchaseOrder) => {
+    setSelectedPO(po);
+    const { data } = await supabase.from('purchase_order_items').select('*').eq('po_id', po.id);
+    setSelectedItems(data || []);
+  };
+
+  const changeStatus = async (po: PurchaseOrder, status: PurchaseOrder['status']) => {
+    // When marking as received, restock products for the not-yet-received quantity
+    if (status === 'received' && po.status !== 'received') {
+      for (const item of selectedItems) {
+        if (!item.product_id) continue;
+        const remaining = item.quantity_ordered - (item.quantity_received || 0);
+        if (remaining <= 0) continue;
+        const { data: prod } = await supabase.from('products').select('stock').eq('id', item.product_id).maybeSingle();
+        if (prod) {
+          await supabase.from('products').update({ stock: prod.stock + remaining }).eq('id', item.product_id);
+        }
+        await supabase.from('purchase_order_items').update({ quantity_received: item.quantity_ordered }).eq('id', item.id);
+      }
+    }
+    await supabase.from('purchase_orders').update({ status, received_at: status === 'received' ? new Date().toISOString() : po.received_at }).eq('id', po.id);
+    setSelectedPO(null);
+    load();
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex justify-between items-center">
@@ -1258,10 +1350,12 @@ function PurchaseOrdersTab() {
 
       {loading ? (
         <div className="text-center text-gray-400 py-12">{tr('loading', lang)}</div>
+      ) : pos.length === 0 ? (
+        <div className="text-center text-gray-400 py-12">{tr('noData', lang)}</div>
       ) : (
         <div className="space-y-3">
           {pos.map((po) => (
-            <div key={po.id} className="bg-white dark:bg-gray-800 rounded-2xl p-4 border border-gray-100 dark:border-gray-700">
+            <button key={po.id} onClick={() => openPO(po)} className="w-full text-left bg-white dark:bg-gray-800 rounded-2xl p-4 border border-gray-100 dark:border-gray-700 hover:border-pink-300 dark:hover:border-pink-700 transition-colors">
               <div className="flex items-center justify-between">
                 <div>
                   <div className="font-mono text-sm font-bold text-gray-900 dark:text-white">{po.po_number}</div>
@@ -1277,7 +1371,7 @@ function PurchaseOrdersTab() {
                   }`}>{po.status}</span>
                 </div>
               </div>
-            </div>
+            </button>
           ))}
         </div>
       )}
@@ -1290,18 +1384,72 @@ function PurchaseOrdersTab() {
           onSaved={() => { setShowForm(false); load(); }}
         />
       )}
+
+      {selectedPO && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
+          <div className="bg-white dark:bg-gray-800 rounded-2xl w-full max-w-lg max-h-[85vh] overflow-y-auto">
+            <div className="sticky top-0 bg-white dark:bg-gray-800 px-5 py-4 border-b border-gray-100 dark:border-gray-700 flex items-center justify-between">
+              <h2 className="font-bold text-gray-900 dark:text-white">{selectedPO.po_number}</h2>
+              <button onClick={() => setSelectedPO(null)} className="p-1 text-gray-400"><X className="w-5 h-5" /></button>
+            </div>
+            <div className="p-5 space-y-4">
+              <div className="text-sm text-gray-600 dark:text-gray-300">
+                Fournisseur: <span className="font-medium text-gray-900 dark:text-white">{selectedPO.supplier_name || '—'}</span><br />
+                Date: {formatDate(selectedPO.created_at, lang)}<br />
+                Statut actuel: <span className="font-medium">{selectedPO.status}</span>
+              </div>
+              <div>
+                <h3 className="font-semibold text-sm text-gray-900 dark:text-white mb-2">Articles</h3>
+                <div className="space-y-1.5">
+                  {selectedItems.map((item) => (
+                    <div key={item.id} className="flex justify-between text-sm bg-gray-50 dark:bg-gray-900 rounded-lg px-3 py-2">
+                      <span className="text-gray-700 dark:text-gray-200">{item.product_name}</span>
+                      <span className="text-gray-500">{item.quantity_ordered} × {formatPrice(item.unit_price)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <div className="flex justify-between font-bold text-gray-900 dark:text-white pt-3 border-t border-gray-100 dark:border-gray-700">
+                <span>Total</span>
+                <span>{formatPrice(selectedPO.total_amount)}</span>
+              </div>
+              <div>
+                <h3 className="font-semibold text-sm text-gray-900 dark:text-white mb-2">Changer le statut</h3>
+                <div className="flex gap-2 flex-wrap">
+                  {(['draft', 'sent', 'received', 'cancelled'] as const).map((s) => (
+                    <button
+                      key={s}
+                      onClick={() => changeStatus(selectedPO, s)}
+                      disabled={selectedPO.status === s}
+                      className={`px-3 py-2 rounded-xl text-xs font-semibold border ${
+                        selectedPO.status === s
+                          ? 'bg-pink-500 text-white border-pink-500 cursor-default'
+                          : 'bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-300 border-gray-200 dark:border-gray-700 hover:border-pink-300'
+                      }`}
+                    >
+                      {s === 'received' ? '✓ Reçu (met à jour le stock)' : s}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-function PurchaseOrderForm({ suppliers, products, onClose, onSaved }: {
+function PurchaseOrderForm({ suppliers, products, initialSupplierId, initialItems, onClose, onSaved }: {
   suppliers: Supplier[];
   products: Product[];
+  initialSupplierId?: string;
+  initialItems?: { productId: string; qty: number; price: number }[];
   onClose: () => void;
   onSaved: () => void;
 }) {
-  const [supplierId, setSupplierId] = useState('');
-  const [items, setItems] = useState<{ productId: string; qty: number; price: number }[]>([]);
+  const [supplierId, setSupplierId] = useState(initialSupplierId || '');
+  const [items, setItems] = useState<{ productId: string; qty: number; price: number }[]>(initialItems && initialItems.length > 0 ? initialItems : []);
   const [notes, setNotes] = useState('');
 
   const addItem = () => setItems([...items, { productId: '', qty: 1, price: 0 }]);
@@ -1683,43 +1831,100 @@ function ExpensesTab() {
 }
 
 // ===================== REORDER TAB =====================
-function ReorderTab({ navigate }: { navigate: (path: string) => void }) {
+function ReorderTab({ navigate: _navigate }: { navigate: (path: string) => void }) {
   const { lang } = useApp();
   const [products, setProducts] = useState<Product[]>([]);
+  const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [loading, setLoading] = useState(true);
-  const [activeSection, setActiveSection] = useState<'out' | 'low' | 'seasonal'>('out');
+  const [activeSection, setActiveSection] = useState<'out' | 'low' | 'new' | 'seasonal'>('out');
+  const [selected, setSelected] = useState<Record<string, number>>({}); // productId -> qty
+  const [showPOForm, setShowPOForm] = useState(false);
+
+  const load = useCallback(async () => {
+    const [{ data }, { data: sups }] = await Promise.all([
+      supabase.from('products').select('*').order('name_fr'),
+      supabase.from('suppliers').select('*').order('name'),
+    ]);
+    setProducts(data as Product[] || []);
+    setSuppliers(sups || []);
+    setLoading(false);
+  }, []);
 
   useEffect(() => {
-    (async () => {
-      const { data } = await supabase.from('products').select('*').order('name_fr');
-      setProducts(data as Product[] || []);
-      setLoading(false);
-    })();
-    const sub = supabase.channel('reorder-sync').on('postgres_changes', { event: '*', schema: 'public', table: 'products' }, async () => {
-      const { data } = await supabase.from('products').select('*').order('name_fr');
-      setProducts(data as Product[] || []);
-    }).subscribe();
+    load();
+    const sub = supabase.channel('reorder-sync').on('postgres_changes', { event: '*', schema: 'public', table: 'products' }, () => load()).subscribe();
     return () => { supabase.removeChannel(sub); };
-  }, []);
+  }, [load]);
+
+  const suggestedQty = (p: Product) => Math.max((p.stock_min || 10) * 3 - p.stock, 10);
 
   const outOfStock = products.filter(p => p.stock === 0);
   const lowStock = products.filter(p => p.stock > 0 && p.stock <= (p.stock_min || 5));
+  const newProducts = [...products].sort((a, b) => (b.created_at || '').localeCompare(a.created_at || '')).slice(0, 20);
   const seasonal = products.filter(p => p.is_seasonal);
 
   const sections = [
     { key: 'out' as const, label: tr('outOfStockProducts', lang), items: outOfStock, color: 'red' },
     { key: 'low' as const, label: tr('lowStockProducts', lang), items: lowStock, color: 'orange' },
+    { key: 'new' as const, label: 'Nouveaux produits', items: newProducts, color: 'purple' },
     { key: 'seasonal' as const, label: tr('seasonalProducts', lang), items: seasonal, color: 'blue' },
   ];
 
   const current = sections.find(s => s.key === activeSection)!;
-  const suggestedQty = (p: Product) => Math.max((p.stock_min || 10) * 3 - p.stock, 10);
+  const selectedCount = Object.keys(selected).length;
+
+  const toggleSelect = (p: Product) => {
+    setSelected((prev) => {
+      const next = { ...prev };
+      if (next[p.id] !== undefined) {
+        delete next[p.id];
+      } else {
+        next[p.id] = suggestedQty(p);
+      }
+      return next;
+    });
+  };
+
+  const updateQty = (id: string, qty: number) => {
+    setSelected((prev) => ({ ...prev, [id]: qty }));
+  };
+
+  const selectAllCurrent = () => {
+    setSelected((prev) => {
+      const next = { ...prev };
+      const allSelected = current.items.every((p) => next[p.id] !== undefined);
+      current.items.forEach((p) => {
+        if (allSelected) delete next[p.id];
+        else if (next[p.id] === undefined) next[p.id] = suggestedQty(p);
+      });
+      return next;
+    });
+  };
+
+  const initialPOItems = Object.entries(selected).map(([productId, qty]) => {
+    const p = products.find((pr) => pr.id === productId);
+    return { productId, qty, price: p?.purchase_price || 0 };
+  });
+  const initialSupplierId = (() => {
+    const ids = Object.keys(selected).map((id) => products.find((p) => p.id === id)?.supplier_id).filter(Boolean) as string[];
+    if (ids.length === 0) return '';
+    const counts: Record<string, number> = {};
+    ids.forEach((id) => { counts[id] = (counts[id] || 0) + 1; });
+    return Object.entries(counts).sort((a, b) => b[1] - a[1])[0][0];
+  })();
 
   return (
     <div className="space-y-4">
-      <div>
-        <h2 className="text-xl font-bold text-gray-900 dark:text-white">{tr('reorderList', lang)}</h2>
-        <p className="text-sm text-gray-500">{tr('reorderSubtitle', lang)}</p>
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div>
+          <h2 className="text-xl font-bold text-gray-900 dark:text-white">{tr('reorderList', lang)}</h2>
+          <p className="text-sm text-gray-500">{tr('reorderSubtitle', lang)}</p>
+        </div>
+        {selectedCount > 0 && (
+          <button onClick={() => setShowPOForm(true)} className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-pink-500 hover:bg-pink-600 text-white text-sm font-semibold">
+            <ShoppingCart className="w-4 h-4" /> {tr('createPO', lang)} ({selectedCount})
+          </button>
+        )}
       </div>
 
       <div className="flex gap-2 flex-wrap">
@@ -1740,36 +1945,64 @@ function ReorderTab({ navigate }: { navigate: (path: string) => void }) {
             <table className="w-full text-sm">
               <thead className="bg-gray-50 dark:bg-gray-900">
                 <tr>
+                  <th className="text-center px-4 py-3">
+                    <input type="checkbox" className="accent-pink-500" checked={current.items.length > 0 && current.items.every((p) => selected[p.id] !== undefined)} onChange={selectAllCurrent} />
+                  </th>
                   <th className="text-left px-4 py-3 font-medium text-gray-500">{tr('name', lang)}</th>
                   <th className="text-left px-4 py-3 font-medium text-gray-500 hidden sm:table-cell">{tr('category', lang)}</th>
                   <th className="text-center px-4 py-3 font-medium text-gray-500">{tr('stock', lang)}</th>
-                  <th className="text-center px-4 py-3 font-medium text-gray-500 hidden sm:table-cell">{tr('suggestedQty', lang)}</th>
+                  <th className="text-center px-4 py-3 font-medium text-gray-500">{tr('suggestedQty', lang)}</th>
                   <th className="text-right px-4 py-3 font-medium text-gray-500">{tr('actions', lang)}</th>
                 </tr>
               </thead>
               <tbody>
-                {current.items.map(p => (
-                  <tr key={p.id} className="border-t border-gray-50 dark:border-gray-700">
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-2">
-                        {p.images?.[0] && <img src={p.images[0]} alt="" className="w-8 h-8 rounded-md object-cover" />}
-                        <span className="font-medium text-gray-900 dark:text-white">{getProductName(p, lang)}</span>
-                      </div>
-                    </td>
-                    <td className="px-4 py-3 text-gray-500 hidden sm:table-cell">{p.sku || '-'}</td>
-                    <td className="px-4 py-3 text-center">
-                      <span className={`px-2 py-0.5 rounded-md text-xs font-medium ${p.stock === 0 ? 'bg-red-100 text-red-600 dark:bg-red-900/30' : 'bg-orange-100 text-orange-600 dark:bg-orange-900/30'}`}>{p.stock}</span>
-                    </td>
-                    <td className="px-4 py-3 text-center text-gray-600 dark:text-gray-300 hidden sm:table-cell">{suggestedQty(p)}</td>
-                    <td className="px-4 py-3 text-right">
-                      <button onClick={() => navigate('/admin')} className="text-xs text-pink-500 hover:text-pink-600 font-medium">{tr('createPO', lang)}</button>
-                    </td>
-                  </tr>
-                ))}
+                {current.items.map(p => {
+                  const isSelected = selected[p.id] !== undefined;
+                  return (
+                    <tr key={p.id} className={`border-t border-gray-50 dark:border-gray-700 ${isSelected ? 'bg-pink-50/50 dark:bg-pink-900/10' : ''}`}>
+                      <td className="px-4 py-3 text-center">
+                        <input type="checkbox" className="accent-pink-500" checked={isSelected} onChange={() => toggleSelect(p)} />
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-2">
+                          {p.images?.[0] && <img src={p.images[0]} alt="" className="w-8 h-8 rounded-md object-cover" />}
+                          <span className="font-medium text-gray-900 dark:text-white">{getProductName(p, lang)}</span>
+                        </div>
+                      </td>
+                      <td className="px-4 py-3 text-gray-500 hidden sm:table-cell">{p.sku || '-'}</td>
+                      <td className="px-4 py-3 text-center">
+                        <span className={`px-2 py-0.5 rounded-md text-xs font-medium ${p.stock === 0 ? 'bg-red-100 text-red-600 dark:bg-red-900/30' : 'bg-orange-100 text-orange-600 dark:bg-orange-900/30'}`}>{p.stock}</span>
+                      </td>
+                      <td className="px-4 py-3 text-center">
+                        {isSelected ? (
+                          <input type="number" value={selected[p.id]} onChange={(e) => updateQty(p.id, Number(e.target.value))} className="w-16 px-2 py-1 rounded-lg bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 text-sm text-center text-gray-900 dark:text-white" />
+                        ) : (
+                          <span className="text-gray-600 dark:text-gray-300">{suggestedQty(p)}</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <button onClick={() => toggleSelect(p)} className="text-xs text-pink-500 hover:text-pink-600 font-medium">
+                          {isSelected ? tr('remove', lang) : tr('add', lang)}
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
         </div>
+      )}
+
+      {showPOForm && (
+        <PurchaseOrderForm
+          suppliers={suppliers}
+          products={products}
+          initialSupplierId={initialSupplierId}
+          initialItems={initialPOItems}
+          onClose={() => setShowPOForm(false)}
+          onSaved={() => { setShowPOForm(false); setSelected({}); }}
+        />
       )}
     </div>
   );
