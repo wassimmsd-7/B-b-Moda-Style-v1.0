@@ -628,6 +628,7 @@ function ProductForm({ product, categories, suppliers, onClose, onSaved }: {
   });
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [dragActive, setDragActive] = useState(false);
   const [poHistory, setPoHistory] = useState<(PurchaseOrderItem & { po_number?: string; po_status?: string; po_date?: string })[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
 
@@ -647,6 +648,17 @@ function ProductForm({ product, categories, suppliers, onClose, onSaved }: {
       setLoadingHistory(false);
     })();
   }, [product]);
+
+  const handleImageFiles = async (files: FileList | File[]) => {
+    setUploading(true);
+    const { urls, errors } = await uploadImages(files);
+    setUploading(false);
+    if (urls.length > 0) {
+      const existing = form.images.split('\n').map((s) => s.trim()).filter(Boolean);
+      setForm((f) => ({ ...f, images: [...existing, ...urls].join('\n') }));
+    }
+    if (errors.length > 0) alert('Certaines photos n\'ont pas pu être envoyées:\n' + errors.join('\n'));
+  };
 
   const handleSave = async () => {
     setSaving(true);
@@ -783,9 +795,19 @@ function ProductForm({ product, categories, suppliers, onClose, onSaved }: {
                   ))}
                 </div>
               )}
-              <label className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl border-2 border-dashed border-gray-300 dark:border-gray-600 text-sm text-gray-500 dark:text-gray-400 cursor-pointer hover:border-pink-400 hover:text-pink-500">
+              <label
+                onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); setDragActive(true); }}
+                onDragLeave={(e) => { e.preventDefault(); e.stopPropagation(); setDragActive(false); }}
+                onDrop={async (e) => {
+                  e.preventDefault(); e.stopPropagation();
+                  setDragActive(false);
+                  if (uploading || !e.dataTransfer.files || e.dataTransfer.files.length === 0) return;
+                  await handleImageFiles(e.dataTransfer.files);
+                }}
+                className={`flex items-center justify-center gap-2 px-4 py-4 rounded-xl border-2 border-dashed text-sm cursor-pointer transition-colors ${dragActive ? 'border-pink-500 bg-pink-50 dark:bg-pink-900/20 text-pink-500' : 'border-gray-300 dark:border-gray-600 text-gray-500 dark:text-gray-400 hover:border-pink-400 hover:text-pink-500'}`}
+              >
                 <Upload className="w-4 h-4" />
-                {uploading ? 'Envoi en cours...' : 'Ajouter des photos (téléphone / ordinateur)'}
+                {uploading ? 'Envoi en cours...' : dragActive ? 'Déposez vos photos ici' : 'Glissez-déposez des photos, ou cliquez pour choisir (téléphone / ordinateur)'}
                 <input
                   type="file"
                   accept="image/jpeg,image/png,image/webp,image/gif"
@@ -794,15 +816,8 @@ function ProductForm({ product, categories, suppliers, onClose, onSaved }: {
                   className="hidden"
                   onChange={async (e) => {
                     if (!e.target.files || e.target.files.length === 0) return;
-                    setUploading(true);
-                    const { urls, errors } = await uploadImages(e.target.files);
-                    setUploading(false);
+                    await handleImageFiles(e.target.files);
                     e.target.value = '';
-                    if (urls.length > 0) {
-                      const existing = form.images.split('\n').map((s) => s.trim()).filter(Boolean);
-                      setForm({ ...form, images: [...existing, ...urls].join('\n') });
-                    }
-                    if (errors.length > 0) alert('Certaines photos n\'ont pas pu être envoyées:\n' + errors.join('\n'));
                   }}
                 />
               </label>

@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { useApp } from '@/context/AppContext';
 import { tr } from '@/lib/utils';
 import { CheckCircle2 } from 'lucide-react';
@@ -8,7 +9,12 @@ interface OrderSuccessPageProps {
 }
 
 export function OrderSuccessPage({ orderNumber, navigate }: OrderSuccessPageProps) {
-  const { lang } = useApp();
+  const { lang, clearCart } = useApp();
+
+  useEffect(() => {
+    clearCart();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-950 pt-20 flex items-center justify-center">

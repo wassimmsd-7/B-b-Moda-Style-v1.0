@@ -11,7 +11,7 @@ interface CheckoutPageProps {
 }
 
 export function CheckoutPage({ navigate }: CheckoutPageProps) {
-  const { lang, cart, cartTotal, clearCart } = useApp();
+  const { lang, cart, cartTotal } = useApp();
   const [zones, setZones] = useState<DeliveryZone[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -156,7 +156,6 @@ export function CheckoutPage({ navigate }: CheckoutPageProps) {
         }
       }
 
-      clearCart();
       navigate(`/order-success/${orderNumber}`);
     } catch (err) {
       setError((err as Error).message);
@@ -165,8 +164,11 @@ export function CheckoutPage({ navigate }: CheckoutPageProps) {
     }
   };
 
+  useEffect(() => {
+    if (cart.length === 0) navigate('/cart');
+  }, [cart.length, navigate]);
+
   if (cart.length === 0) {
-    navigate('/cart');
     return null;
   }
 
