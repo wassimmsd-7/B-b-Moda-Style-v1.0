@@ -21,3 +21,13 @@ dist-ssr
 *.sln
 *.sw?
 .env
+
+# Capacitor / Android build artifacts (keep android/ source, ignore build output)
+android/app/build
+android/build
+android/.gradle
+android/local.properties
+android/app/release
+android/capacitor-cordova-android-plugins
+ios/App/Pods
+ios/App/build

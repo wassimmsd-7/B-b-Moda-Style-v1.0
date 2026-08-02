@@ -12,6 +12,7 @@ import { TipsPage } from '@/pages/TipsPage';
 import { ContactPage } from '@/pages/ContactPage';
 import { AdminPage } from '@/pages/AdminPage';
 import { PosPage } from '@/pages/PosPage';
+import { InstallPrompt } from '@/components/InstallPrompt';
 
 const WHATSAPP_NUMBER = '213542886457';
 
@@ -58,6 +59,7 @@ function AppContent() {
 
       {!isFullScreen && <Footer navigate={navigate} />}
       {!isFullScreen && <WhatsAppButton />}
+      {!isFullScreen && <InstallPrompt />}
     </div>
   );
 }
