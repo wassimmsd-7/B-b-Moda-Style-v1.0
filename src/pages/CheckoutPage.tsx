@@ -61,14 +61,10 @@ export function CheckoutPage({ navigate }: CheckoutPageProps) {
 
       // Create or find client
       let clientId: string | null = null;
-      const { data: existingClient } = await supabase
-        .from('clients')
-        .select('id')
-        .eq('phone', form.phone)
-        .maybeSingle();
+      const { data: existingClientId } = await supabase.rpc('find_client_by_phone', { p_phone: form.phone });
 
-      if (existingClient) {
-        clientId = existingClient.id;
+      if (existingClientId) {
+        clientId = existingClientId as string;
       } else {
         const { data: newClient } = await supabase
           .from('clients')

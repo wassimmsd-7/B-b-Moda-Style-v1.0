@@ -97,6 +97,7 @@ export const t: Translations = {
 
   // Order tracking
   trackOrder: { fr: 'Suivre ma commande', ar: 'تتبع طلبي', en: 'Track my order', dz: 'Tabi3 commande ta3i' },
+  trackOrderBothRequired: { fr: 'Entrez le numéro de commande ET le téléphone utilisé lors de la commande.', ar: 'أدخل رقم الطلب ورقم الهاتف المستخدم عند الطلب.', en: 'Enter both the order number and the phone used when ordering.', dz: 'Dkhel raqam commande w telephone li khdemti bih.' },
   orderStatus: { fr: 'Statut', ar: 'الحالة', en: 'Status', dz: 'Halat' },
   pending: { fr: 'En attente', ar: 'في الانتظار', en: 'Pending', dz: "Fi l'intidar" },
   confirmed: { fr: 'Confirmée', ar: 'مؤكدة', en: 'Confirmed', dz: 'Mou2akkada' },
@@ -239,6 +240,8 @@ export const t: Translations = {
   suggestedQty: { fr: 'Qté suggérée', ar: 'كمية مقترحة', en: 'Suggested qty', dz: 'Kemiya mo9tara7a' },
   createPO: { fr: 'Créer bon de commande', ar: 'إنشاء أمر شراء', en: 'Create purchase order', dz: 'Cree bon de commande' },
   deliveryZonesTab: { fr: 'Zones de livraison', ar: 'مناطق التوصيل', en: 'Delivery zones', dz: 'Zones ta3 livraison' },
+  expertTipsTab: { fr: 'Conseils experts', ar: 'نصائح الخبراء', en: 'Expert tips', dz: 'Nsayeh' },
+  staffTab: { fr: 'Personnel', ar: 'الموظفون', en: 'Staff', dz: 'Personnel' },
 
   // Import
   importData: { fr: 'Importer', ar: 'استيراد', en: 'Import', dz: 'Importi' },

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { useApp } from '@/context/AppContext';
 import { tr, formatPrice, formatDateTime } from '@/lib/utils';
 import { supabase } from '@/lib/supabase';
@@ -22,49 +22,40 @@ const statusIcons: Record<string, typeof Package> = {
 
 export function TrackOrderPage(_props: TrackOrderPageProps) {
   const { lang } = useApp();
-  const [search, setSearch] = useState('');
+  const [orderNumber, setOrderNumber] = useState('');
+  const [phone, setPhone] = useState('');
   const [order, setOrder] = useState<Order | null>(null);
   const [items, setItems] = useState<OrderItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const handleSearch = async () => {
-    if (!search.trim()) return;
+    if (!orderNumber.trim() || !phone.trim()) {
+      setError(tr('trackOrderBothRequired', lang));
+      return;
+    }
     setLoading(true);
     setError(null);
     setOrder(null);
     setItems([]);
 
-    const { data, error } = await supabase
-      .from('orders')
-      .select('*')
-      .or(`order_number.ilike.%${search}%,client_phone.eq.${search}`)
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .maybeSingle();
+    const { data, error } = await supabase.rpc('track_order', {
+      p_order_number: orderNumber.trim(),
+      p_phone: phone.trim(),
+    });
 
     if (error) {
       setError(error.message);
     } else if (!data) {
       setError(tr('noData', lang));
     } else {
-      setOrder(data as Order);
-      const { data: itemData } = await supabase
-        .from('order_items')
-        .select('*')
-        .eq('order_id', (data as Order).id);
-      setItems(itemData || []);
+      const { items: orderItems, ...orderFields } = data as Order & { items: OrderItem[] };
+      setOrder(orderFields as Order);
+      setItems(orderItems || []);
     }
     setLoading(false);
   };
 
-  useEffect(() => {
-    if (search.length >= 6) {
-      const timer = setTimeout(() => handleSearch(), 500);
-      return () => clearTimeout(timer);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [search]);
 
   const currentStep = order ? statusFlow.indexOf(order.status) : -1;
 
@@ -74,16 +65,30 @@ export function TrackOrderPage(_props: TrackOrderPageProps) {
         <h1 className="text-2xl font-bold text-gray-900 dark:text-white mb-6">{tr('trackOrder', lang)}</h1>
 
         {/* Search */}
-        <div className="relative mb-6">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
+        <div className="grid sm:grid-cols-2 gap-3 mb-3">
           <input
             type="text"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder={`${tr('orderNumber', lang)} / ${tr('phone', lang)}...`}
-            className="w-full pl-10 pr-4 py-3 rounded-xl bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-pink-500"
+            value={orderNumber}
+            onChange={(e) => setOrderNumber(e.target.value)}
+            placeholder={tr('orderNumber', lang)}
+            className="w-full px-4 py-3 rounded-xl bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-pink-500"
+          />
+          <input
+            type="tel"
+            value={phone}
+            onChange={(e) => setPhone(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') handleSearch(); }}
+            placeholder={tr('phone', lang)}
+            className="w-full px-4 py-3 rounded-xl bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-pink-500"
           />
         </div>
+        <button
+          onClick={handleSearch}
+          disabled={loading}
+          className="w-full sm:w-auto mb-6 flex items-center justify-center gap-2 px-6 py-3 rounded-xl bg-pink-500 hover:bg-pink-600 disabled:opacity-60 text-white text-sm font-semibold"
+        >
+          <Search className="w-4 h-4" /> {tr('trackOrder', lang)}
+        </button>
 
         {loading && <div className="text-center text-gray-400 py-8">{tr('loading', lang)}</div>}
         {error && <div className="text-center text-red-500 py-8">{error}</div>}

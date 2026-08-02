@@ -4,19 +4,20 @@ import { tr, formatPrice, formatDate, getProductName, getCategoryName, getStockS
 import { supabase } from '@/lib/supabase';
 import { ImportExportButtons } from '@/components/ImportExportButtons';
 import { csvToNumber, csvToBool, csvToArray } from '@/lib/csv';
+import { uploadImages } from '@/lib/storage';
 import {
   LayoutDashboard, Package, ShoppingCart, Users, Truck, Tag, BarChart3,
   Settings, Menu, X, Plus, Edit2, Trash2, Search, AlertTriangle,
   TrendingUp, DollarSign, ShoppingBag, ArrowDownRight,
-  ClipboardList, Wallet, Receipt, ListChecks, Check, MapPin,
+  ClipboardList, Wallet, Receipt, ListChecks, Check, MapPin, Lightbulb, UserCog, Upload,
 } from 'lucide-react';
-import type { Product, Category, Order, OrderItem, Client, Supplier, Promotion, PurchaseOrder, PurchaseOrderItem, Expense, DeliveryZone } from '@/lib/types';
+import type { Product, Category, Order, OrderItem, Client, Supplier, Promotion, PurchaseOrder, PurchaseOrderItem, Expense, DeliveryZone, ExpertTip, AppUser } from '@/lib/types';
 
 interface AdminPageProps {
   navigate: (path: string) => void;
 }
 
-type AdminTab = 'dashboard' | 'products' | 'orders' | 'inventory' | 'clients' | 'suppliers' | 'promotions' | 'purchaseOrders' | 'analytics' | 'expenses' | 'reorder' | 'deliveryZones' | 'categories' | 'settings';
+type AdminTab = 'dashboard' | 'products' | 'orders' | 'inventory' | 'clients' | 'suppliers' | 'promotions' | 'purchaseOrders' | 'analytics' | 'expenses' | 'reorder' | 'deliveryZones' | 'categories' | 'expertTips' | 'staff' | 'settings';
 
 export function AdminPage({ navigate }: AdminPageProps) {
   const { lang, staffRole, setStaffRole } = useApp();
@@ -69,6 +70,8 @@ export function AdminPage({ navigate }: AdminPageProps) {
     { key: 'reorder', label: tr('reorderList', lang), icon: ShoppingCart },
     { key: 'deliveryZones', label: tr('deliveryZonesTab', lang), icon: MapPin },
     { key: 'categories', label: tr('category', lang), icon: Tag },
+    { key: 'expertTips', label: tr('expertTipsTab', lang), icon: Lightbulb },
+    { key: 'staff', label: tr('staffTab', lang), icon: UserCog },
     { key: 'settings', label: tr('settings', lang), icon: Settings },
   ];
 
@@ -159,6 +162,11 @@ export function AdminPage({ navigate }: AdminPageProps) {
           {tab === 'reorder' && <ReorderTab navigate={navigate} />}
           {tab === 'deliveryZones' && <DeliveryZonesTab />}
           {tab === 'categories' && <CategoriesTab />}
+          {tab === 'expertTips' && <ExpertTipsTab />}
+          {tab === 'staff' && staffRole === 'superadmin' && <StaffTab />}
+          {tab === 'staff' && staffRole !== 'superadmin' && (
+            <div className="text-center text-gray-400 py-12">Accès réservé au super-administrateur.</div>
+          )}
           {tab === 'settings' && <SettingsTab />}
         </main>
       </div>
@@ -619,6 +627,7 @@ function ProductForm({ product, categories, suppliers, onClose, onSaved }: {
     is_active: product?.is_active ?? true,
   });
   const [saving, setSaving] = useState(false);
+  const [uploading, setUploading] = useState(false);
   const [poHistory, setPoHistory] = useState<(PurchaseOrderItem & { po_number?: string; po_status?: string; po_date?: string })[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
 
@@ -754,8 +763,54 @@ function ProductForm({ product, categories, suppliers, onClose, onSaved }: {
           <Field label="Couleurs (séparées par virgules)">
             <input value={form.colors} onChange={(e) => setForm({ ...form, colors: e.target.value })} className="input" placeholder="Rouge, Bleu, Rose" />
           </Field>
-          <Field label="Images (une URL par ligne)">
-            <textarea value={form.images} onChange={(e) => setForm({ ...form, images: e.target.value })} rows={3} className="input" placeholder="https://..." />
+          <Field label="Photos du produit">
+            <div className="space-y-2">
+              {form.images.split('\n').map((s) => s.trim()).filter(Boolean).length > 0 && (
+                <div className="flex flex-wrap gap-2">
+                  {form.images.split('\n').map((s) => s.trim()).filter(Boolean).map((url, i) => (
+                    <div key={i} className="relative w-16 h-16 rounded-lg overflow-hidden border border-gray-200 dark:border-gray-700 group">
+                      <img src={url} alt="" className="w-full h-full object-cover" />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const list = form.images.split('\n').map((s) => s.trim()).filter(Boolean);
+                          list.splice(i, 1);
+                          setForm({ ...form, images: list.join('\n') });
+                        }}
+                        className="absolute top-0.5 right-0.5 w-4 h-4 rounded-full bg-black/60 text-white text-xs flex items-center justify-center opacity-0 group-hover:opacity-100"
+                      >×</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <label className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl border-2 border-dashed border-gray-300 dark:border-gray-600 text-sm text-gray-500 dark:text-gray-400 cursor-pointer hover:border-pink-400 hover:text-pink-500">
+                <Upload className="w-4 h-4" />
+                {uploading ? 'Envoi en cours...' : 'Ajouter des photos (téléphone / ordinateur)'}
+                <input
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp,image/gif"
+                  multiple
+                  disabled={uploading}
+                  className="hidden"
+                  onChange={async (e) => {
+                    if (!e.target.files || e.target.files.length === 0) return;
+                    setUploading(true);
+                    const { urls, errors } = await uploadImages(e.target.files);
+                    setUploading(false);
+                    e.target.value = '';
+                    if (urls.length > 0) {
+                      const existing = form.images.split('\n').map((s) => s.trim()).filter(Boolean);
+                      setForm({ ...form, images: [...existing, ...urls].join('\n') });
+                    }
+                    if (errors.length > 0) alert('Certaines photos n\'ont pas pu être envoyées:\n' + errors.join('\n'));
+                  }}
+                />
+              </label>
+              <details className="text-xs text-gray-400">
+                <summary className="cursor-pointer">Ou coller des URLs d'images manuellement</summary>
+                <textarea value={form.images} onChange={(e) => setForm({ ...form, images: e.target.value })} rows={3} className="input mt-2" placeholder="https://..." />
+              </details>
+            </div>
           </Field>
           <Field label="Description (FR)">
             <textarea value={form.description_fr} onChange={(e) => setForm({ ...form, description_fr: e.target.value })} rows={3} className="input" />
@@ -2290,6 +2345,299 @@ function CategoryForm({ category, onClose, onSaved }: { category: Category | nul
         <div className="sticky bottom-0 bg-white dark:bg-gray-800 px-5 py-4 border-t border-gray-100 dark:border-gray-700 flex gap-3 justify-end">
           <button onClick={onClose} className="px-4 py-2.5 rounded-xl text-sm font-medium text-gray-600 dark:text-gray-300 border border-gray-200 dark:border-gray-700">{tr('cancel', lang)}</button>
           <button disabled={saving} onClick={handleSave} className="px-4 py-2.5 rounded-xl bg-pink-500 text-white text-sm font-semibold disabled:opacity-60">{saving ? '...' : tr('save', lang)}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ───────────── EXPERT TIPS TAB ─────────────
+function ExpertTipsTab() {
+  const { lang } = useApp();
+  const [tips, setTips] = useState<ExpertTip[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [editing, setEditing] = useState<ExpertTip | null>(null);
+  const [showForm, setShowForm] = useState(false);
+
+  const load = useCallback(async () => {
+    const { data } = await supabase.from('expert_tips').select('*').order('age_min_months');
+    setTips(data || []);
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const handleDelete = async (id: string) => {
+    if (!confirm('Supprimer ce conseil?')) return;
+    const { error } = await supabase.from('expert_tips').delete().eq('id', id);
+    if (error) { alert('Erreur lors de la suppression: ' + error.message); return; }
+    load();
+  };
+
+  const toggleActive = async (tip: ExpertTip) => {
+    const { error } = await supabase.from('expert_tips').update({ active: !tip.active }).eq('id', tip.id);
+    if (error) { alert('Erreur: ' + error.message); return; }
+    load();
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex justify-between items-center">
+        <p className="text-sm text-gray-500 dark:text-gray-400">{tips.length} {tr('expertTipsTab', lang)}</p>
+        <button onClick={() => { setEditing(null); setShowForm(true); }} className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-pink-500 hover:bg-pink-600 text-white text-sm font-semibold">
+          <Plus className="w-4 h-4" /> {tr('add', lang)}
+        </button>
+      </div>
+
+      {loading ? (
+        <div className="text-center text-gray-400 py-12">{tr('loading', lang)}</div>
+      ) : tips.length === 0 ? (
+        <div className="text-center text-gray-400 py-12">{tr('noData', lang)}</div>
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          {tips.map((t) => (
+            <div key={t.id} className="bg-white dark:bg-gray-800 rounded-2xl p-4 border border-gray-100 dark:border-gray-700">
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="font-semibold text-gray-900 dark:text-white truncate">{t.title_fr}</div>
+                  <div className="text-xs text-gray-400 mt-0.5">{t.category} · {t.age_min_months}-{t.age_max_months} mois</div>
+                </div>
+                <div className="flex gap-1 shrink-0">
+                  <button onClick={() => { setEditing(t); setShowForm(true); }} className="p-1.5 text-gray-400 hover:text-pink-500"><Edit2 className="w-4 h-4" /></button>
+                  <button onClick={() => handleDelete(t.id)} className="p-1.5 text-gray-400 hover:text-red-500"><Trash2 className="w-4 h-4" /></button>
+                </div>
+              </div>
+              {t.content_fr && <p className="text-sm text-gray-500 dark:text-gray-400 mt-2 line-clamp-2">{t.content_fr}</p>}
+              <button onClick={() => toggleActive(t)} className={`mt-2 text-xs font-medium ${t.active ? 'text-green-500' : 'text-gray-400'}`}>
+                {t.active ? 'Actif' : 'Inactif'}
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {showForm && <ExpertTipForm tip={editing} onClose={() => setShowForm(false)} onSaved={() => { setShowForm(false); load(); }} />}
+    </div>
+  );
+}
+
+function ExpertTipForm({ tip, onClose, onSaved }: { tip: ExpertTip | null; onClose: () => void; onSaved: () => void }) {
+  const { lang } = useApp();
+  const [form, setForm] = useState({
+    title_fr: tip?.title_fr || '',
+    title_ar: tip?.title_ar || '',
+    title_en: tip?.title_en || '',
+    content_fr: tip?.content_fr || '',
+    content_ar: tip?.content_ar || '',
+    content_en: tip?.content_en || '',
+    category: tip?.category || 'sommeil',
+    age_min_months: tip?.age_min_months?.toString() || '0',
+    age_max_months: tip?.age_max_months?.toString() || '36',
+    icon: tip?.icon || '',
+    active: tip?.active ?? true,
+  });
+  const [saving, setSaving] = useState(false);
+
+  const handleSave = async () => {
+    if (!form.title_fr.trim()) { alert('Le titre (français) est requis.'); return; }
+    setSaving(true);
+    const payload = {
+      title_fr: form.title_fr.trim(),
+      title_ar: form.title_ar.trim() || null,
+      title_en: form.title_en.trim() || null,
+      content_fr: form.content_fr.trim() || null,
+      content_ar: form.content_ar.trim() || null,
+      content_en: form.content_en.trim() || null,
+      category: form.category,
+      age_min_months: Number(form.age_min_months) || 0,
+      age_max_months: Number(form.age_max_months) || 36,
+      icon: form.icon.trim() || null,
+      active: form.active,
+    };
+    const { error } = tip
+      ? await supabase.from('expert_tips').update(payload).eq('id', tip.id)
+      : await supabase.from('expert_tips').insert(payload);
+    setSaving(false);
+    if (error) { alert('Erreur: ' + error.message); return; }
+    onSaved();
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
+      <div className="bg-white dark:bg-gray-800 rounded-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
+        <div className="sticky top-0 bg-white dark:bg-gray-800 px-5 py-4 border-b border-gray-100 dark:border-gray-700 flex items-center justify-between">
+          <h2 className="font-bold text-gray-900 dark:text-white">{tip ? tr('edit', lang) : tr('add', lang)} — {tr('expertTipsTab', lang)}</h2>
+          <button onClick={onClose} className="p-1 text-gray-400"><X className="w-5 h-5" /></button>
+        </div>
+        <div className="p-5 space-y-3">
+          <Field label="Titre (français)"><input value={form.title_fr} onChange={(e) => setForm({ ...form, title_fr: e.target.value })} className="input" /></Field>
+          <Field label="Titre (arabe)"><input dir="rtl" value={form.title_ar} onChange={(e) => setForm({ ...form, title_ar: e.target.value })} className="input" /></Field>
+          <Field label="Titre (anglais)"><input value={form.title_en} onChange={(e) => setForm({ ...form, title_en: e.target.value })} className="input" /></Field>
+          <Field label="Contenu (français)"><textarea rows={3} value={form.content_fr} onChange={(e) => setForm({ ...form, content_fr: e.target.value })} className="input" /></Field>
+          <Field label="Contenu (arabe)"><textarea dir="rtl" rows={3} value={form.content_ar} onChange={(e) => setForm({ ...form, content_ar: e.target.value })} className="input" /></Field>
+          <Field label="Contenu (anglais)"><textarea rows={3} value={form.content_en} onChange={(e) => setForm({ ...form, content_en: e.target.value })} className="input" /></Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Catégorie">
+              <select value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} className="input">
+                <option value="sommeil">Sommeil</option>
+                <option value="alimentation">Alimentation</option>
+                <option value="sante">Santé</option>
+                <option value="developpement">Développement</option>
+                <option value="hygiene">Hygiène</option>
+                <option value="securite">Sécurité</option>
+              </select>
+            </Field>
+            <Field label="Icône (lucide)"><input value={form.icon} onChange={(e) => setForm({ ...form, icon: e.target.value })} className="input" placeholder="moon" /></Field>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Âge min (mois)"><input type="number" value={form.age_min_months} onChange={(e) => setForm({ ...form, age_min_months: e.target.value })} className="input" /></Field>
+            <Field label="Âge max (mois)"><input type="number" value={form.age_max_months} onChange={(e) => setForm({ ...form, age_max_months: e.target.value })} className="input" /></Field>
+          </div>
+          <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+            <input type="checkbox" checked={form.active} onChange={(e) => setForm({ ...form, active: e.target.checked })} className="w-4 h-4 accent-pink-500" />
+            Conseil actif (visible sur le site)
+          </label>
+        </div>
+        <div className="sticky bottom-0 bg-white dark:bg-gray-800 px-5 py-4 border-t border-gray-100 dark:border-gray-700 flex gap-3 justify-end">
+          <button onClick={onClose} className="px-4 py-2.5 rounded-xl text-sm font-medium text-gray-600 dark:text-gray-300 border border-gray-200 dark:border-gray-700">{tr('cancel', lang)}</button>
+          <button disabled={saving} onClick={handleSave} className="px-4 py-2.5 rounded-xl bg-pink-500 text-white text-sm font-semibold disabled:opacity-60">{saving ? '...' : tr('save', lang)}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ───────────── STAFF TAB ─────────────
+function StaffTab() {
+  const { lang } = useApp();
+  const [staff, setStaff] = useState<AppUser[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [showAdd, setShowAdd] = useState(false);
+
+  const load = useCallback(async () => {
+    const { data } = await supabase.from('app_users').select('*').order('created_at', { ascending: false });
+    setStaff(data || []);
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const updateRole = async (u: AppUser, role: AppUser['role']) => {
+    const { error } = await supabase.from('app_users').update({ role }).eq('id', u.id);
+    if (error) { alert('Erreur: ' + error.message); return; }
+    load();
+  };
+
+  const toggleActive = async (u: AppUser) => {
+    const { error } = await supabase.from('app_users').update({ active: !u.active }).eq('id', u.id);
+    if (error) { alert('Erreur: ' + error.message); return; }
+    load();
+  };
+
+  const removeStaff = async (u: AppUser) => {
+    if (!confirm(`Retirer ${u.email} de l'équipe? Son accès à l'admin sera immédiatement bloqué (son compte de connexion Supabase n'est pas supprimé, contactez-nous pour ça).`)) return;
+    const { error } = await supabase.from('app_users').delete().eq('id', u.id);
+    if (error) { alert('Erreur: ' + error.message); return; }
+    load();
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-2xl p-4 text-sm text-blue-700 dark:text-blue-400">
+        Pour créer un nouveau <strong>compte de connexion</strong> (email + mot de passe), allez d'abord dans votre Dashboard Supabase → Authentication → Users → "Add user". Revenez ensuite ici et cliquez "Lier un compte existant" pour lui donner un rôle et l'activer dans l'app.
+      </div>
+
+      <div className="flex justify-between items-center">
+        <p className="text-sm text-gray-500 dark:text-gray-400">{staff.length} {tr('staffTab', lang)}</p>
+        <button onClick={() => setShowAdd(true)} className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-pink-500 hover:bg-pink-600 text-white text-sm font-semibold">
+          <Plus className="w-4 h-4" /> Lier un compte existant
+        </button>
+      </div>
+
+      {loading ? (
+        <div className="text-center text-gray-400 py-12">{tr('loading', lang)}</div>
+      ) : (
+        <div className="bg-white dark:bg-gray-800 rounded-2xl border border-gray-100 dark:border-gray-700 overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50 dark:bg-gray-900">
+                <tr>
+                  <th className="text-left px-4 py-3 font-medium text-gray-500">Email</th>
+                  <th className="text-left px-4 py-3 font-medium text-gray-500 hidden sm:table-cell">Nom</th>
+                  <th className="text-center px-4 py-3 font-medium text-gray-500">Rôle</th>
+                  <th className="text-center px-4 py-3 font-medium text-gray-500">Actif</th>
+                  <th className="text-right px-4 py-3 font-medium text-gray-500">{tr('actions', lang)}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {staff.map((u) => (
+                  <tr key={u.id} className="border-t border-gray-50 dark:border-gray-700">
+                    <td className="px-4 py-3 font-medium text-gray-900 dark:text-white">{u.email}</td>
+                    <td className="px-4 py-3 text-gray-500 hidden sm:table-cell">{u.name}</td>
+                    <td className="px-4 py-3 text-center">
+                      <select value={u.role} onChange={(e) => updateRole(u, e.target.value as AppUser['role'])} className="px-2 py-1 rounded-lg bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 text-xs">
+                        <option value="superadmin">Super admin</option>
+                        <option value="owner">Propriétaire</option>
+                        <option value="cashier">Caissier</option>
+                      </select>
+                    </td>
+                    <td className="px-4 py-3 text-center">
+                      <button onClick={() => toggleActive(u)} className={`px-2 py-0.5 rounded-full text-xs font-medium ${u.active ? 'bg-green-100 text-green-600 dark:bg-green-900/30' : 'bg-gray-100 text-gray-500 dark:bg-gray-700'}`}>
+                        {u.active ? 'Actif' : 'Inactif'}
+                      </button>
+                    </td>
+                    <td className="px-4 py-3 text-right">
+                      <button onClick={() => removeStaff(u)} className="p-1.5 text-gray-400 hover:text-red-500"><Trash2 className="w-4 h-4 inline" /></button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {showAdd && <StaffAddForm onClose={() => setShowAdd(false)} onSaved={() => { setShowAdd(false); load(); }} />}
+    </div>
+  );
+}
+
+function StaffAddForm({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
+  const [email, setEmail] = useState('');
+  const [name, setName] = useState('');
+  const [role, setRole] = useState<AppUser['role']>('cashier');
+  const [saving, setSaving] = useState(false);
+
+  const handleSave = async () => {
+    if (!email.trim() || !name.trim()) { alert('Email et nom sont requis.'); return; }
+    setSaving(true);
+    const { error } = await supabase.from('app_users').insert({ email: email.trim(), name: name.trim(), role, active: true });
+    setSaving(false);
+    if (error) { alert('Erreur: ' + error.message + '\n\nAssurez-vous que ce compte existe déjà dans Authentication → Users sur votre Dashboard Supabase.'); return; }
+    onSaved();
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
+      <div className="bg-white dark:bg-gray-800 rounded-2xl w-full max-w-md">
+        <div className="px-5 py-4 border-b border-gray-100 dark:border-gray-700 flex items-center justify-between">
+          <h2 className="font-bold text-gray-900 dark:text-white">Lier un compte existant</h2>
+          <button onClick={onClose} className="p-1 text-gray-400"><X className="w-5 h-5" /></button>
+        </div>
+        <div className="p-5 space-y-3">
+          <Field label="Email (identique à celui créé dans Supabase Auth)"><input type="email" value={email} onChange={(e) => setEmail(e.target.value)} className="input" /></Field>
+          <Field label="Nom affiché"><input value={name} onChange={(e) => setName(e.target.value)} className="input" /></Field>
+          <Field label="Rôle">
+            <select value={role} onChange={(e) => setRole(e.target.value as AppUser['role'])} className="input">
+              <option value="cashier">Caissier</option>
+              <option value="owner">Propriétaire</option>
+              <option value="superadmin">Super admin</option>
+            </select>
+          </Field>
+        </div>
+        <div className="px-5 py-4 border-t border-gray-100 dark:border-gray-700 flex gap-3 justify-end">
+          <button onClick={onClose} className="px-4 py-2.5 rounded-xl text-sm font-medium text-gray-600 dark:text-gray-300 border border-gray-200 dark:border-gray-700">Annuler</button>
+          <button disabled={saving} onClick={handleSave} className="px-4 py-2.5 rounded-xl bg-pink-500 text-white text-sm font-semibold disabled:opacity-60">{saving ? '...' : 'Ajouter'}</button>
         </div>
       </div>
     </div>
