@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
-import { Menu, X, ShoppingCart, Sun, Moon, Globe, Phone, MapPin } from 'lucide-react';
+import { Menu, X, ShoppingCart, Sun, Moon, Globe, Phone, MapPin, Download, Share, PlusSquare } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
 import { tr } from '@/lib/i18n';
+import { useInstallPrompt } from '@/hooks/useInstallPrompt';
 import type { Lang } from '@/lib/types';
 
 interface HeaderProps {
@@ -17,6 +18,13 @@ export function Header({ navigate }: HeaderProps) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [langOpen, setLangOpen] = useState(false);
   const [scrolled, setScrolled] = useState(false);
+  const { canInstall, hasNativePrompt, promptInstall } = useInstallPrompt();
+  const [iosHintOpen, setIosHintOpen] = useState(false);
+
+  const handleInstallClick = () => {
+    if (hasNativePrompt) promptInstall();
+    else setIosHintOpen((v) => !v);
+  };
 
   useEffect(() => {
     const handler = () => setScrolled(window.scrollY > 20);
@@ -84,6 +92,29 @@ export function Header({ navigate }: HeaderProps) {
               {cartCount > 0 && <span className="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-pink-500 text-white text-[10px] font-bold flex items-center justify-center animate-in zoom-in">{cartCount}</span>}
             </button>
 
+            {canInstall && (
+              <div className="relative hidden sm:block">
+                <button
+                  onClick={handleInstallClick}
+                  className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-semibold bg-pink-500 hover:bg-pink-600 text-white transition-colors"
+                  aria-label="Installer l'application"
+                >
+                  <Download className="w-4 h-4" />
+                  <span className="hidden md:inline">Installer l'app</span>
+                </button>
+                {iosHintOpen && (
+                  <>
+                    <div className="fixed inset-0 z-10" onClick={() => setIosHintOpen(false)} />
+                    <div className="absolute right-0 mt-2 w-64 bg-white dark:bg-gray-800 rounded-xl shadow-xl border border-gray-100 dark:border-gray-700 z-20 p-4 text-sm text-gray-700 dark:text-gray-200">
+                      <p className="font-semibold mb-2">Installer sur iPhone</p>
+                      <p className="flex items-center gap-1.5 mb-1">1. Appuyez sur <Share className="w-4 h-4 inline text-blue-500" /> (Partager)</p>
+                      <p className="flex items-center gap-1.5">2. Choisissez <PlusSquare className="w-4 h-4 inline text-gray-500" /> "Sur l'écran d'accueil"</p>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+
             <button onClick={() => navigate('/admin')} className="hidden sm:block px-3 py-2 rounded-lg text-sm font-medium bg-gray-900 dark:bg-white text-white dark:text-gray-900 hover:opacity-90 transition-opacity">{tr('admin', lang)}</button>
 
             <button onClick={() => setMobileOpen(!mobileOpen)} className="lg:hidden p-2 rounded-lg text-gray-700 dark:text-gray-200 hover:bg-pink-50 dark:hover:bg-pink-900/30" aria-label="Menu">
@@ -94,6 +125,19 @@ export function Header({ navigate }: HeaderProps) {
 
         {mobileOpen && (
           <div className="lg:hidden pb-4 border-t border-gray-100 dark:border-gray-700 pt-2">
+            {canInstall && (
+              <button
+                onClick={() => { handleInstallClick(); if (hasNativePrompt) setMobileOpen(false); }}
+                className="flex items-center gap-2 w-full text-left px-4 py-3 rounded-lg text-sm font-semibold text-white bg-pink-500 hover:bg-pink-600 transition-colors mb-1"
+              >
+                <Download className="w-4 h-4" /> Installer l'app
+              </button>
+            )}
+            {iosHintOpen && (
+              <p className="px-4 pb-2 text-xs text-gray-500 dark:text-gray-400 flex flex-wrap items-center gap-1">
+                Appuyez sur <Share className="w-3.5 h-3.5 inline" /> puis <PlusSquare className="w-3.5 h-3.5 inline" /> "Sur l'écran d'accueil"
+              </p>
+            )}
             {navLinks.map((link) => (
               <button key={link.key} onClick={() => { navigate(link.path); setMobileOpen(false); }} className="block w-full text-left px-4 py-3 rounded-lg text-sm font-medium text-gray-700 dark:text-gray-200 hover:bg-pink-50 dark:hover:bg-pink-900/30 transition-colors">{tr(link.key, lang)}</button>
             ))}

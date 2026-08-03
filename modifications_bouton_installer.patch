@@ -1,0 +1,223 @@
+diff --git a/src/components/InstallPrompt.tsx b/src/components/InstallPrompt.tsx
+index f532aec..0af1dc5 100644
+--- a/src/components/InstallPrompt.tsx
++++ b/src/components/InstallPrompt.tsx
+@@ -1,52 +1,20 @@
+-import { useEffect, useState } from 'react';
++import { useState } from 'react';
+ import { X, Share, PlusSquare, Download } from 'lucide-react';
+-import { useApp } from '@/context/AppContext';
+-
+-interface BeforeInstallPromptEvent extends Event {
+-  prompt: () => Promise<void>;
+-  userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }>;
+-}
++import { useInstallPrompt } from '@/hooks/useInstallPrompt';
+ 
+ const DISMISS_KEY = 'bms_install_banner_dismissed';
+ 
++/** Bannière discrète en bas d'écran, proposée une fois puis mémorisée comme "vue". */
+ export function InstallPrompt() {
+-  const { lang } = useApp();
+-  const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(null);
+-  const [showIosHint, setShowIosHint] = useState(false);
++  const { canInstall, hasNativePrompt, promptInstall } = useInstallPrompt();
+   const [dismissed, setDismissed] = useState(() => localStorage.getItem(DISMISS_KEY) === '1');
+ 
+-  useEffect(() => {
+-    // Already installed (standalone display mode) → never show.
+-    if (window.matchMedia('(display-mode: standalone)').matches) return;
+-
+-    const isIos = /iphone|ipad|ipod/.test(window.navigator.userAgent.toLowerCase());
+-    const isSafari = /safari/.test(window.navigator.userAgent.toLowerCase()) && !/crios|fxios/.test(window.navigator.userAgent.toLowerCase());
+-
+-    if (isIos && isSafari) {
+-      setShowIosHint(true);
+-    }
+-
+-    const handler = (e: Event) => {
+-      e.preventDefault();
+-      setDeferredPrompt(e as BeforeInstallPromptEvent);
+-    };
+-    window.addEventListener('beforeinstallprompt', handler);
+-    return () => window.removeEventListener('beforeinstallprompt', handler);
+-  }, []);
+-
+   const dismiss = () => {
+     setDismissed(true);
+     localStorage.setItem(DISMISS_KEY, '1');
+   };
+ 
+-  const handleInstall = async () => {
+-    if (!deferredPrompt) return;
+-    await deferredPrompt.prompt();
+-    await deferredPrompt.userChoice;
+-    setDeferredPrompt(null);
+-  };
+-
+-  if (dismissed || (!deferredPrompt && !showIosHint)) return null;
++  if (dismissed || !canInstall) return null;
+ 
+   return (
+     <div className="fixed bottom-4 left-4 right-4 sm:left-auto sm:right-4 sm:w-96 z-50 bg-white dark:bg-gray-800 rounded-2xl shadow-2xl border border-gray-100 dark:border-gray-700 p-4 flex items-start gap-3 animate-in slide-in-from-bottom">
+@@ -55,14 +23,14 @@ export function InstallPrompt() {
+       </div>
+       <div className="flex-1 min-w-0">
+         <div className="font-semibold text-sm text-gray-900 dark:text-white">
+-          {lang === 'ar' ? 'ثبت التطبيق' : 'Installer l\'application'}
++          Installer l'application
+         </div>
+-        {deferredPrompt ? (
++        {hasNativePrompt ? (
+           <>
+             <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+               Accès rapide depuis votre écran d'accueil, comme une vraie app.
+             </p>
+-            <button onClick={handleInstall} className="mt-2 px-3 py-1.5 rounded-lg bg-pink-500 hover:bg-pink-600 text-white text-xs font-semibold">
++            <button onClick={promptInstall} className="mt-2 px-3 py-1.5 rounded-lg bg-pink-500 hover:bg-pink-600 text-white text-xs font-semibold">
+               Installer
+             </button>
+           </>
+diff --git a/src/components/Layout.tsx b/src/components/Layout.tsx
+index 0fe439f..311c69b 100644
+--- a/src/components/Layout.tsx
++++ b/src/components/Layout.tsx
+@@ -1,7 +1,8 @@
+ import { useState, useEffect } from 'react';
+-import { Menu, X, ShoppingCart, Sun, Moon, Globe, Phone, MapPin } from 'lucide-react';
++import { Menu, X, ShoppingCart, Sun, Moon, Globe, Phone, MapPin, Download, Share, PlusSquare } from 'lucide-react';
+ import { useApp } from '@/context/AppContext';
+ import { tr } from '@/lib/i18n';
++import { useInstallPrompt } from '@/hooks/useInstallPrompt';
+ import type { Lang } from '@/lib/types';
+ 
+ interface HeaderProps {
+@@ -17,6 +18,13 @@ export function Header({ navigate }: HeaderProps) {
+   const [mobileOpen, setMobileOpen] = useState(false);
+   const [langOpen, setLangOpen] = useState(false);
+   const [scrolled, setScrolled] = useState(false);
++  const { canInstall, hasNativePrompt, promptInstall } = useInstallPrompt();
++  const [iosHintOpen, setIosHintOpen] = useState(false);
++
++  const handleInstallClick = () => {
++    if (hasNativePrompt) promptInstall();
++    else setIosHintOpen((v) => !v);
++  };
+ 
+   useEffect(() => {
+     const handler = () => setScrolled(window.scrollY > 20);
+@@ -84,6 +92,29 @@ export function Header({ navigate }: HeaderProps) {
+               {cartCount > 0 && <span className="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-pink-500 text-white text-[10px] font-bold flex items-center justify-center animate-in zoom-in">{cartCount}</span>}
+             </button>
+ 
++            {canInstall && (
++              <div className="relative hidden sm:block">
++                <button
++                  onClick={handleInstallClick}
++                  className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-semibold bg-pink-500 hover:bg-pink-600 text-white transition-colors"
++                  aria-label="Installer l'application"
++                >
++                  <Download className="w-4 h-4" />
++                  <span className="hidden md:inline">Installer l'app</span>
++                </button>
++                {iosHintOpen && (
++                  <>
++                    <div className="fixed inset-0 z-10" onClick={() => setIosHintOpen(false)} />
++                    <div className="absolute right-0 mt-2 w-64 bg-white dark:bg-gray-800 rounded-xl shadow-xl border border-gray-100 dark:border-gray-700 z-20 p-4 text-sm text-gray-700 dark:text-gray-200">
++                      <p className="font-semibold mb-2">Installer sur iPhone</p>
++                      <p className="flex items-center gap-1.5 mb-1">1. Appuyez sur <Share className="w-4 h-4 inline text-blue-500" /> (Partager)</p>
++                      <p className="flex items-center gap-1.5">2. Choisissez <PlusSquare className="w-4 h-4 inline text-gray-500" /> "Sur l'écran d'accueil"</p>
++                    </div>
++                  </>
++                )}
++              </div>
++            )}
++
+             <button onClick={() => navigate('/admin')} className="hidden sm:block px-3 py-2 rounded-lg text-sm font-medium bg-gray-900 dark:bg-white text-white dark:text-gray-900 hover:opacity-90 transition-opacity">{tr('admin', lang)}</button>
+ 
+             <button onClick={() => setMobileOpen(!mobileOpen)} className="lg:hidden p-2 rounded-lg text-gray-700 dark:text-gray-200 hover:bg-pink-50 dark:hover:bg-pink-900/30" aria-label="Menu">
+@@ -94,6 +125,19 @@ export function Header({ navigate }: HeaderProps) {
+ 
+         {mobileOpen && (
+           <div className="lg:hidden pb-4 border-t border-gray-100 dark:border-gray-700 pt-2">
++            {canInstall && (
++              <button
++                onClick={() => { handleInstallClick(); if (hasNativePrompt) setMobileOpen(false); }}
++                className="flex items-center gap-2 w-full text-left px-4 py-3 rounded-lg text-sm font-semibold text-white bg-pink-500 hover:bg-pink-600 transition-colors mb-1"
++              >
++                <Download className="w-4 h-4" /> Installer l'app
++              </button>
++            )}
++            {iosHintOpen && (
++              <p className="px-4 pb-2 text-xs text-gray-500 dark:text-gray-400 flex flex-wrap items-center gap-1">
++                Appuyez sur <Share className="w-3.5 h-3.5 inline" /> puis <PlusSquare className="w-3.5 h-3.5 inline" /> "Sur l'écran d'accueil"
++              </p>
++            )}
+             {navLinks.map((link) => (
+               <button key={link.key} onClick={() => { navigate(link.path); setMobileOpen(false); }} className="block w-full text-left px-4 py-3 rounded-lg text-sm font-medium text-gray-700 dark:text-gray-200 hover:bg-pink-50 dark:hover:bg-pink-900/30 transition-colors">{tr(link.key, lang)}</button>
+             ))}
+diff --git a/src/hooks/useInstallPrompt.ts b/src/hooks/useInstallPrompt.ts
+new file mode 100644
+index 0000000..a0461ce
+--- /dev/null
++++ b/src/hooks/useInstallPrompt.ts
+@@ -0,0 +1,59 @@
++import { useEffect, useState } from 'react';
++
++interface BeforeInstallPromptEvent extends Event {
++  prompt: () => Promise<void>;
++  userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }>;
++}
++
++/**
++ * Centralise la détection "l'app est installable" pour toute l'app :
++ * - Android/Chrome/Edge : écoute l'événement natif `beforeinstallprompt`
++ * - iOS/Safari : ne supporte pas cet événement, on détecte l'OS pour
++ *   afficher l'instruction manuelle ("Partager → Sur l'écran d'accueil")
++ * - Détecte aussi si l'app tourne déjà en mode standalone (déjà installée)
++ *   pour ne jamais proposer d'installer une app déjà installée.
++ */
++export function useInstallPrompt() {
++  const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(null);
++  const [isInstalled, setIsInstalled] = useState(false);
++  const [isIos, setIsIos] = useState(false);
++
++  useEffect(() => {
++    const standalone = window.matchMedia('(display-mode: standalone)').matches
++      || (window.navigator as unknown as { standalone?: boolean }).standalone === true;
++    setIsInstalled(standalone);
++
++    const ua = window.navigator.userAgent.toLowerCase();
++    const iosDevice = /iphone|ipad|ipod/.test(ua);
++    const safari = /safari/.test(ua) && !/crios|fxios/.test(ua);
++    setIsIos(iosDevice && safari);
++
++    const handler = (e: Event) => {
++      e.preventDefault();
++      setDeferredPrompt(e as BeforeInstallPromptEvent);
++    };
++    window.addEventListener('beforeinstallprompt', handler);
++
++    const installedHandler = () => setIsInstalled(true);
++    window.addEventListener('appinstalled', installedHandler);
++
++    return () => {
++      window.removeEventListener('beforeinstallprompt', handler);
++      window.removeEventListener('appinstalled', installedHandler);
++    };
++  }, []);
++
++  const promptInstall = async () => {
++    if (!deferredPrompt) return;
++    await deferredPrompt.prompt();
++    const choice = await deferredPrompt.userChoice;
++    if (choice.outcome === 'accepted') setIsInstalled(true);
++    setDeferredPrompt(null);
++  };
++
++  // "Installable" = soit le navigateur propose le prompt natif (Android/Desktop Chrome),
++  // soit on est sur iOS/Safari où seule l'instruction manuelle est possible.
++  const canInstall = !isInstalled && (!!deferredPrompt || isIos);
++
++  return { canInstall, isInstalled, isIos, hasNativePrompt: !!deferredPrompt, promptInstall };
++}
