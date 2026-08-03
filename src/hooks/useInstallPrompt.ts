@@ -5,18 +5,27 @@ interface BeforeInstallPromptEvent extends Event {
   userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }>;
 }
 
+export type InstallPlatform = 'ios-safari' | 'android-chrome' | 'desktop-chrome' | 'firefox' | 'other';
+
 /**
- * Centralise la détection "l'app est installable" pour toute l'app :
- * - Android/Chrome/Edge : écoute l'événement natif `beforeinstallprompt`
- * - iOS/Safari : ne supporte pas cet événement, on détecte l'OS pour
- *   afficher l'instruction manuelle ("Partager → Sur l'écran d'accueil")
- * - Détecte aussi si l'app tourne déjà en mode standalone (déjà installée)
- *   pour ne jamais proposer d'installer une app déjà installée.
+ * Centralise la détection "l'app est installable" pour toute l'app.
+ *
+ * IMPORTANT : l'événement natif `beforeinstallprompt` (Chrome/Edge/Android)
+ * ne se déclenche PAS toujours immédiatement (heuristiques d'engagement de
+ * Chrome), et n'existe carrément PAS sur iOS Safari, Safari Desktop, ni
+ * Firefox. Si on cache le bouton tant que cet événement n'est pas reçu,
+ * une grande partie des visiteurs ne voit jamais aucun moyen d'installer,
+ * même si l'app EST installable manuellement chez eux.
+ *
+ * On affiche donc TOUJOURS le bouton "Installer l'app" (sauf si l'app est
+ * déjà installée), et on adapte le comportement au clic :
+ * - Si le prompt natif est disponible → on l'ouvre directement.
+ * - Sinon → on affiche des instructions adaptées à la plateforme détectée.
  */
 export function useInstallPrompt() {
   const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(null);
   const [isInstalled, setIsInstalled] = useState(false);
-  const [isIos, setIsIos] = useState(false);
+  const [platform, setPlatform] = useState<InstallPlatform>('other');
 
   useEffect(() => {
     const standalone = window.matchMedia('(display-mode: standalone)').matches
@@ -24,9 +33,17 @@ export function useInstallPrompt() {
     setIsInstalled(standalone);
 
     const ua = window.navigator.userAgent.toLowerCase();
-    const iosDevice = /iphone|ipad|ipod/.test(ua);
-    const safari = /safari/.test(ua) && !/crios|fxios/.test(ua);
-    setIsIos(iosDevice && safari);
+    const isIosDevice = /iphone|ipad|ipod/.test(ua);
+    const isSafari = /safari/.test(ua) && !/crios|fxios|edgios/.test(ua);
+    const isAndroid = /android/.test(ua);
+    const isFirefox = /firefox|fxios/.test(ua);
+    const isChromium = /chrome|crios|edg/.test(ua);
+
+    if (isIosDevice && isSafari) setPlatform('ios-safari');
+    else if (isAndroid && isChromium) setPlatform('android-chrome');
+    else if (isFirefox) setPlatform('firefox');
+    else if (isChromium) setPlatform('desktop-chrome');
+    else setPlatform('other');
 
     const handler = (e: Event) => {
       e.preventDefault();
@@ -51,9 +68,10 @@ export function useInstallPrompt() {
     setDeferredPrompt(null);
   };
 
-  // "Installable" = soit le navigateur propose le prompt natif (Android/Desktop Chrome),
-  // soit on est sur iOS/Safari où seule l'instruction manuelle est possible.
-  const canInstall = !isInstalled && (!!deferredPrompt || isIos);
+  // Toujours affichable tant que l'app n'est pas déjà installée : on ne
+  // dépend plus uniquement de la disponibilité du prompt natif.
+  const canInstall = !isInstalled;
+  const hasNativePrompt = !!deferredPrompt;
 
-  return { canInstall, isInstalled, isIos, hasNativePrompt: !!deferredPrompt, promptInstall };
+  return { canInstall, isInstalled, platform, hasNativePrompt, promptInstall };
 }
