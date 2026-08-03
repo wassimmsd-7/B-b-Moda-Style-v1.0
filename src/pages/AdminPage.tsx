@@ -1538,6 +1538,7 @@ function PurchaseOrdersTab() {
   const [showForm, setShowForm] = useState(false);
   const [selectedPO, setSelectedPO] = useState<PurchaseOrder | null>(null);
   const [selectedItems, setSelectedItems] = useState<PurchaseOrderItem[]>([]);
+  const [editingPO, setEditingPO] = useState<PurchaseOrder | null>(null);
 
   const load = useCallback(async () => {
     const [{ data: poData }, { data: supData }, { data: prodData }] = await Promise.all([
@@ -1631,6 +1632,22 @@ function PurchaseOrdersTab() {
         />
       )}
 
+      {editingPO && (
+        <PurchaseOrderForm
+          suppliers={suppliers}
+          products={products}
+          editingPO={editingPO}
+          initialSupplierId={editingPO.supplier_id || ''}
+          initialItems={selectedItems.map((item) => ({
+            productId: item.product_id || '',
+            qty: item.quantity_ordered,
+            price: item.unit_price,
+          }))}
+          onClose={() => setEditingPO(null)}
+          onSaved={() => { setEditingPO(null); setSelectedPO(null); load(); }}
+        />
+      )}
+
       {selectedPO && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
           <div className="bg-white dark:bg-gray-800 rounded-2xl w-full max-w-lg max-h-[85vh] overflow-y-auto">
@@ -1645,7 +1662,17 @@ function PurchaseOrdersTab() {
                 Statut actuel: <span className="font-medium">{selectedPO.status}</span>
               </div>
               <div>
-                <h3 className="font-semibold text-sm text-gray-900 dark:text-white mb-2">Articles</h3>
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="font-semibold text-sm text-gray-900 dark:text-white">Articles</h3>
+                  {selectedPO.status !== 'received' && selectedPO.status !== 'cancelled' && (
+                    <button
+                      onClick={() => setEditingPO(selectedPO)}
+                      className="flex items-center gap-1 text-xs text-pink-500 font-semibold"
+                    >
+                      <Edit2 className="w-3.5 h-3.5" /> Modifier (fournisseur, quantités, articles)
+                    </button>
+                  )}
+                </div>
                 <div className="space-y-1.5">
                   {selectedItems.map((item) => (
                     <div key={item.id} className="flex justify-between text-sm bg-gray-50 dark:bg-gray-900 rounded-lg px-3 py-2">
@@ -1686,18 +1713,21 @@ function PurchaseOrdersTab() {
   );
 }
 
-function PurchaseOrderForm({ suppliers, products, initialSupplierId, initialItems, onClose, onSaved }: {
+function PurchaseOrderForm({ suppliers, products, initialSupplierId, initialItems, editingPO, onClose, onSaved }: {
   suppliers: Supplier[];
   products: Product[];
   initialSupplierId?: string;
   initialItems?: { productId: string; qty: number; price: number }[];
+  /** Si fourni, le formulaire modifie ce bon existant (fournisseur, articles, quantités) au lieu d'en créer un nouveau. */
+  editingPO?: PurchaseOrder | null;
   onClose: () => void;
   onSaved: () => void;
 }) {
   const [supplierId, setSupplierId] = useState(initialSupplierId || '');
   const [items, setItems] = useState<{ productId: string; qty: number; price: number }[]>(initialItems && initialItems.length > 0 ? initialItems : []);
-  const [notes, setNotes] = useState('');
+  const [notes, setNotes] = useState(editingPO?.notes || '');
   const [showMultiPicker, setShowMultiPicker] = useState(false);
+  const [saving, setSaving] = useState(false);
 
   const addItem = () => setItems([...items, { productId: '', qty: 1, price: 0 }]);
   const removeItem = (i: number) => setItems(items.filter((_, idx) => idx !== i));
@@ -1732,7 +1762,43 @@ function PurchaseOrderForm({ suppliers, products, initialSupplierId, initialItem
 
   const handleSave = async () => {
     if (items.filter((i) => i.productId).length === 0) { alert('Ajoutez au moins un article.'); return; }
+    setSaving(true);
     const supplier = suppliers.find((s) => s.id === supplierId);
+    const validItems = items.filter((i) => i.productId).map((i) => {
+      const p = products.find((p) => p.id === i.productId);
+      return {
+        product_id: i.productId,
+        product_name: p?.name_fr || '',
+        quantity_ordered: i.qty,
+        unit_price: i.price,
+        total_price: i.qty * i.price,
+      };
+    });
+
+    if (editingPO) {
+      // Édition d'un bon existant : on met à jour l'entête, puis on remplace
+      // entièrement les lignes (plus simple et plus sûr que de diffuser
+      // ligne par ligne quels produits/quantités ont changé).
+      const { error: poError } = await supabase.from('purchase_orders').update({
+        supplier_id: supplierId || null,
+        supplier_name: supplier?.name || null,
+        total_amount: total,
+        notes,
+      }).eq('id', editingPO.id);
+      if (poError) { setSaving(false); alert('Erreur lors de la mise à jour du bon de commande: ' + poError.message); return; }
+
+      const { error: delError } = await supabase.from('purchase_order_items').delete().eq('po_id', editingPO.id);
+      if (delError) { setSaving(false); alert('Erreur lors de la mise à jour des articles: ' + delError.message); return; }
+
+      const { error: itemsError } = await supabase.from('purchase_order_items').insert(
+        validItems.map((i) => ({ ...i, po_id: editingPO.id })),
+      );
+      if (itemsError) { setSaving(false); alert('Erreur lors de l\'ajout des articles: ' + itemsError.message); return; }
+      setSaving(false);
+      onSaved();
+      return;
+    }
+
     const { data: po, error: poError } = await supabase.from('purchase_orders').insert({
       supplier_id: supplierId || null,
       supplier_name: supplier?.name || null,
@@ -1742,23 +1808,15 @@ function PurchaseOrderForm({ suppliers, products, initialSupplierId, initialItem
     }).select('id').single();
 
     if (poError || !po) {
+      setSaving(false);
       alert('Erreur lors de la création du bon de commande: ' + (poError?.message || 'inconnue'));
       return;
     }
 
     const { error: itemsError } = await supabase.from('purchase_order_items').insert(
-      items.filter((i) => i.productId).map((i) => {
-        const p = products.find((p) => p.id === i.productId);
-        return {
-          po_id: po.id,
-          product_id: i.productId,
-          product_name: p?.name_fr || '',
-          quantity_ordered: i.qty,
-          unit_price: i.price,
-          total_price: i.qty * i.price,
-        };
-      }),
+      validItems.map((i) => ({ ...i, po_id: po.id })),
     );
+    setSaving(false);
     if (itemsError) { alert('Erreur lors de l\'ajout des articles: ' + itemsError.message); return; }
     onSaved();
   };
@@ -1767,7 +1825,7 @@ function PurchaseOrderForm({ suppliers, products, initialSupplierId, initialItem
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
       <div className="bg-white dark:bg-gray-800 rounded-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto">
         <div className="sticky top-0 bg-white dark:bg-gray-800 px-5 py-4 border-b border-gray-100 dark:border-gray-700 flex items-center justify-between">
-          <h2 className="font-bold text-gray-900 dark:text-white">Bon de commande</h2>
+          <h2 className="font-bold text-gray-900 dark:text-white">{editingPO ? `Modifier ${editingPO.po_number}` : 'Bon de commande'}</h2>
           <button onClick={onClose} className="p-1 text-gray-400"><X className="w-5 h-5" /></button>
         </div>
         <div className="p-5 space-y-4">
@@ -1824,7 +1882,9 @@ function PurchaseOrderForm({ suppliers, products, initialSupplierId, initialItem
         </div>
         <div className="sticky bottom-0 bg-white dark:bg-gray-800 px-5 py-4 border-t border-gray-100 dark:border-gray-700 flex gap-3 justify-end">
           <button onClick={onClose} className="px-4 py-2.5 rounded-xl text-sm font-medium text-gray-600 dark:text-gray-300 border border-gray-200 dark:border-gray-700">Annuler</button>
-          <button onClick={handleSave} className="px-4 py-2.5 rounded-xl bg-pink-500 text-white text-sm font-semibold">Enregistrer</button>
+          <button onClick={handleSave} disabled={saving} className="px-4 py-2.5 rounded-xl bg-pink-500 hover:bg-pink-600 text-white text-sm font-semibold disabled:opacity-50">
+            {saving ? '...' : editingPO ? 'Enregistrer les modifications' : 'Enregistrer'}
+          </button>
         </div>
       </div>
     </div>
@@ -2898,6 +2958,12 @@ function ReorderTab({ navigate: _navigate }: { navigate: (path: string) => void 
   const [activeSection, setActiveSection] = useState<'out' | 'low' | 'new' | 'seasonal'>('out');
   const [selected, setSelected] = useState<Record<string, number>>({}); // productId -> qty
   const [showPOForm, setShowPOForm] = useState(false);
+  // productId -> numéro du bon de commande fournisseur en cours (draft/sent) pour ce produit.
+  // Sert uniquement d'indicateur visuel ("déjà commandé, en attente") — le produit reste
+  // toujours dans le tableau tant que son stock réel n'est pas remonté. S'annuler le bon
+  // le fait automatiquement disparaître d'ici (la requête exclut 'cancelled'), donc le
+  // produit redevient normalement "à commander".
+  const [pendingByProduct, setPendingByProduct] = useState<Record<string, string>>({});
 
   const load = useCallback(async () => {
     const [{ data }, { data: sups }] = await Promise.all([
@@ -2909,11 +2975,28 @@ function ReorderTab({ navigate: _navigate }: { navigate: (path: string) => void 
     setLoading(false);
   }, []);
 
+  const loadPending = useCallback(async () => {
+    const { data: activePOs } = await supabase.from('purchase_orders').select('id, po_number').in('status', ['draft', 'sent']);
+    if (!activePOs || activePOs.length === 0) { setPendingByProduct({}); return; }
+    const poNumberById = Object.fromEntries(activePOs.map((po) => [po.id, po.po_number]));
+    const { data: items } = await supabase.from('purchase_order_items').select('product_id, po_id').in('po_id', activePOs.map((po) => po.id));
+    const map: Record<string, string> = {};
+    (items || []).forEach((item) => {
+      if (item.product_id) map[item.product_id] = poNumberById[item.po_id] || '';
+    });
+    setPendingByProduct(map);
+  }, []);
+
   useEffect(() => {
     load();
+    loadPending();
     const sub = supabase.channel('reorder-sync').on('postgres_changes', { event: '*', schema: 'public', table: 'products' }, () => load()).subscribe();
-    return () => { supabase.removeChannel(sub); };
-  }, [load]);
+    const poSub = supabase.channel('reorder-po-sync')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'purchase_orders' }, () => loadPending())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'purchase_order_items' }, () => loadPending())
+      .subscribe();
+    return () => { supabase.removeChannel(sub); supabase.removeChannel(poSub); };
+  }, [load, loadPending]);
 
   const suggestedQty = (p: Product) => Math.max((p.stock_min || 10) * 3 - p.stock, 10);
 
@@ -3025,7 +3108,14 @@ function ReorderTab({ navigate: _navigate }: { navigate: (path: string) => void 
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-2">
                           {p.images?.[0] && <img src={p.images[0]} alt="" className="w-8 h-8 rounded-md object-cover" />}
-                          <span className="font-medium text-gray-900 dark:text-white">{getProductName(p, lang)}</span>
+                          <div>
+                            <span className="font-medium text-gray-900 dark:text-white">{getProductName(p, lang)}</span>
+                            {pendingByProduct[p.id] && (
+                              <div className="text-[10px] text-blue-600 dark:text-blue-400 font-medium">
+                                Commande en cours ({pendingByProduct[p.id]})
+                              </div>
+                            )}
+                          </div>
                         </div>
                       </td>
                       <td className="px-4 py-3 text-gray-500 hidden sm:table-cell">{p.sku || '-'}</td>
